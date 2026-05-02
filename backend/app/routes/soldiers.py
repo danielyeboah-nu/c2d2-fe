@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from typing import Any
 
 from backend.app.db.database import get_db
-from backend.app.db.models import Assessment, Soldier
+from backend.app.db.models import Assessment, Soldier, SoldierReadiness, SoldierPosition
 from backend.app.deps import get_current_user
 from backend.app.db.models import User
 
@@ -35,6 +35,19 @@ class SoldierCreate(BaseModel):
     skill_adaptability: float = 0.5
     skill_physical: float = 0.5
     skill_technical: float = 0.5
+
+
+class ReadinessUpsert(BaseModel):
+    sleep_hours_24h: float
+    sleep_hours_48h: float = 16.0
+    injury_status: str = "fit"   # fit / light_duty / unfit
+
+
+class PositionUpsert(BaseModel):
+    mgrs_grid: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+    operational_status: str = "available"  # available / on_mission / casualty / rest
 
 
 class SoldierUpdate(BaseModel):
@@ -88,6 +101,42 @@ def _soldier_dict(s: Soldier) -> dict:
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+@router.get("/force-status")
+def get_force_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Combined force readiness snapshot: all active soldiers with positions and readiness data."""
+    soldiers     = db.query(Soldier).filter(Soldier.is_active == True).all()
+    readiness_map = {r.soldier_id: r for r in db.query(SoldierReadiness).all()}
+    position_map  = {p.soldier_id: p for p in db.query(SoldierPosition).all()}
+    active_ids    = {s.id for s in soldiers}
+
+    rows = []
+    for s in soldiers:
+        rows.append({
+            "id":       s.id,
+            "rank":     s.rank,
+            "name":     s.name,
+            "unit":     s.unit,
+            "readiness": _readiness_dict(readiness_map[s.id]) if s.id in readiness_map else None,
+            "position":  _position_dict(position_map[s.id])   if s.id in position_map  else None,
+        })
+
+    statuses = [position_map[sid].operational_status for sid in active_ids if sid in position_map]
+    return {
+        "soldiers": rows,
+        "kpis": {
+            "total":      len(soldiers),
+            "available":  statuses.count("available"),
+            "on_mission": statuses.count("on_mission"),
+            "casualty":   statuses.count("casualty"),
+            "rest":       statuses.count("rest"),
+            "no_data":    len(soldiers) - len(statuses),
+        },
+    }
+
 
 @router.get("")
 def list_soldiers(
@@ -165,6 +214,129 @@ def delete_soldier(
         raise HTTPException(404, detail="Soldier not found")
     db.delete(s)
     db.commit()
+
+
+def _fatigue_index(sleep_24h: float, sleep_48h: float) -> float:
+    """0.0 = fully rested, 1.0 = severely fatigued. Weighted deficit model."""
+    deficit_24h = max(0.0, 8.0 - sleep_24h) / 8.0
+    deficit_48h = max(0.0, 16.0 - sleep_48h) / 16.0
+    return round(0.7 * deficit_24h + 0.3 * deficit_48h, 3)
+
+
+def _readiness_dict(r: SoldierReadiness) -> dict:
+    return {
+        "soldier_id":      r.soldier_id,
+        "sleep_hours_24h": r.sleep_hours_24h,
+        "sleep_hours_48h": r.sleep_hours_48h,
+        "fatigue_index":   r.fatigue_index,
+        "injury_status":   r.injury_status,
+        "updated_at":      r.updated_at.isoformat() if r.updated_at else None,
+    }
+
+
+def _position_dict(p: SoldierPosition) -> dict:
+    return {
+        "soldier_id":         p.soldier_id,
+        "mgrs_grid":          p.mgrs_grid,
+        "lat":                p.lat,
+        "lon":                p.lon,
+        "operational_status": p.operational_status,
+        "updated_at":         p.updated_at.isoformat() if p.updated_at else None,
+    }
+
+
+@router.post("/{soldier_id}/readiness", status_code=status.HTTP_200_OK)
+def upsert_readiness(
+    soldier_id: int,
+    body: ReadinessUpsert,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    s = db.query(Soldier).filter(Soldier.id == soldier_id).first()
+    if not s:
+        raise HTTPException(404, detail="Soldier not found")
+
+    r = db.query(SoldierReadiness).filter(SoldierReadiness.soldier_id == soldier_id).first()
+    if r:
+        r.sleep_hours_24h = body.sleep_hours_24h
+        r.sleep_hours_48h = body.sleep_hours_48h
+        r.fatigue_index   = _fatigue_index(body.sleep_hours_24h, body.sleep_hours_48h)
+        r.injury_status   = body.injury_status
+    else:
+        r = SoldierReadiness(
+            soldier_id=soldier_id,
+            sleep_hours_24h=body.sleep_hours_24h,
+            sleep_hours_48h=body.sleep_hours_48h,
+            fatigue_index=_fatigue_index(body.sleep_hours_24h, body.sleep_hours_48h),
+            injury_status=body.injury_status,
+        )
+        db.add(r)
+
+    db.commit()
+    db.refresh(r)
+    return _readiness_dict(r)
+
+
+@router.get("/{soldier_id}/readiness")
+def get_readiness(
+    soldier_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    s = db.query(Soldier).filter(Soldier.id == soldier_id).first()
+    if not s:
+        raise HTTPException(404, detail="Soldier not found")
+    r = db.query(SoldierReadiness).filter(SoldierReadiness.soldier_id == soldier_id).first()
+    if not r:
+        raise HTTPException(404, detail="No readiness record for this soldier")
+    return _readiness_dict(r)
+
+
+@router.post("/{soldier_id}/position", status_code=status.HTTP_200_OK)
+def upsert_position(
+    soldier_id: int,
+    body: PositionUpsert,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    s = db.query(Soldier).filter(Soldier.id == soldier_id).first()
+    if not s:
+        raise HTTPException(404, detail="Soldier not found")
+
+    p = db.query(SoldierPosition).filter(SoldierPosition.soldier_id == soldier_id).first()
+    if p:
+        p.mgrs_grid          = body.mgrs_grid
+        p.lat                = body.lat
+        p.lon                = body.lon
+        p.operational_status = body.operational_status
+    else:
+        p = SoldierPosition(
+            soldier_id=soldier_id,
+            mgrs_grid=body.mgrs_grid,
+            lat=body.lat,
+            lon=body.lon,
+            operational_status=body.operational_status,
+        )
+        db.add(p)
+
+    db.commit()
+    db.refresh(p)
+    return _position_dict(p)
+
+
+@router.get("/{soldier_id}/position")
+def get_position(
+    soldier_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    s = db.query(Soldier).filter(Soldier.id == soldier_id).first()
+    if not s:
+        raise HTTPException(404, detail="Soldier not found")
+    p = db.query(SoldierPosition).filter(SoldierPosition.soldier_id == soldier_id).first()
+    if not p:
+        raise HTTPException(404, detail="No position record for this soldier")
+    return _position_dict(p)
 
 
 @router.get("/{soldier_id}/assessments")

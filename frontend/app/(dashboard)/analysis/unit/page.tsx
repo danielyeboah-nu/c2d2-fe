@@ -5,7 +5,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from "recharts";
 import { api } from "@/lib/api";
-import type { Soldier, UnitAnalysis } from "@/types";
+import type { UnitAnalysis } from "@/types";
 
 const LDR_FIELDS = ["Planning", "Attn to Detail", "Time Mgmt", "Decisiveness", "Tactics"];
 const STROKE_COLORS = ["#3fb950", "#f59e0b", "#58a6ff", "#f85149", "#a371f7", "#e07b00", "#79c0ff"];
@@ -19,7 +19,6 @@ const PROFICIENCY_COLOR: Record<string, string> = {
 };
 
 export default function UnitAnalysisPage() {
-  const [soldiers, setSoldiers] = useState<Soldier[]>([]);
   const [units, setUnits]   = useState<string[]>([]);
   const [unit, setUnit]     = useState("");
   const [data, setData]     = useState<UnitAnalysis | null>(null);
@@ -27,8 +26,7 @@ export default function UnitAnalysisPage() {
   const [error, setError]   = useState("");
 
   useEffect(() => {
-    api.get<Soldier[]>("/api/v1/soldiers").then(s => {
-      setSoldiers(s);
+    api.get<{ unit?: string }[]>("/api/v1/soldiers").then(s => {
       const us = Array.from(new Set(s.map(x => x.unit ?? "Unknown"))).sort();
       setUnits(us);
       if (us.length) setUnit(us[0]);
@@ -43,11 +41,6 @@ export default function UnitAnalysisPage() {
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   }, [unit]);
-
-  // Build radar data per soldier for comparison
-  function soldierRadar(avgs: Record<string, number>) {
-    return LDR_FIELDS.map(label => ({ subject: label, value: avgs[label] ?? 0 }));
-  }
 
   return (
     <div className="p-6 space-y-6 max-w-6xl">
@@ -81,30 +74,38 @@ export default function UnitAnalysisPage() {
 
       {data && (
         <>
-          {/* Per-soldier radar comparison */}
-          {data.per_soldier.filter(s => Object.keys(s.leader_averages).length > 0).length > 0 && (
-            <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
-              <h3 className="text-sm font-semibold text-white mb-4">Leader Performance Comparison</h3>
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-                {data.per_soldier
-                  .filter(s => Object.keys(s.leader_averages).length > 0)
-                  .map((s, i) => (
-                    <div key={s.id} className="bg-[#0d1117] rounded-lg p-3">
-                      <div className="text-xs font-semibold text-white mb-1 truncate">{s.rank} {s.name}</div>
-                      <div className="text-[10px] text-[#8b949e] mb-2">{s.eval_count} evals</div>
-                      <ResponsiveContainer width="100%" height={140}>
-                        <RadarChart data={soldierRadar(s.leader_averages)}>
-                          <PolarGrid stroke="#30363d" />
-                          <PolarAngleAxis dataKey="subject" tick={{ fill: "#6e7681", fontSize: 9 }} />
-                          <Radar dataKey="value" stroke={STROKE_COLORS[i % STROKE_COLORS.length]}
-                            fill={STROKE_COLORS[i % STROKE_COLORS.length]} fillOpacity={0.25} />
-                        </RadarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  ))}
+          {/* Per-soldier overlaid radar comparison */}
+          {(() => {
+            const active = data.per_soldier.filter(s => Object.keys(s.leader_averages).length > 0);
+            if (!active.length) return null;
+            const radarData = LDR_FIELDS.map(label => {
+              const entry: Record<string, string | number> = { subject: label };
+              active.forEach(s => { entry[`${s.rank} ${s.name}`] = s.leader_averages[label] ?? 0; });
+              return entry;
+            });
+            return (
+              <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
+                <h3 className="text-sm font-semibold text-white mb-3">Leader Performance Comparison</h3>
+                <ResponsiveContainer width="100%" height={260}>
+                  <RadarChart data={radarData}>
+                    <PolarGrid stroke="#30363d" />
+                    <PolarAngleAxis dataKey="subject" tick={{ fill: "#8b949e", fontSize: 11 }} />
+                    {active.map((s, i) => (
+                      <Radar
+                        key={s.id}
+                        name={`${s.rank} ${s.name}`}
+                        dataKey={`${s.rank} ${s.name}`}
+                        stroke={STROKE_COLORS[i % STROKE_COLORS.length]}
+                        fill={STROKE_COLORS[i % STROKE_COLORS.length]}
+                        fillOpacity={0.2}
+                      />
+                    ))}
+                    <Legend wrapperStyle={{ fontSize: 11, color: "#8b949e" }} />
+                  </RadarChart>
+                </ResponsiveContainer>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Unit trend */}
           {data.unit_trend.length > 1 && (

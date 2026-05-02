@@ -74,6 +74,8 @@ class Soldier(Base):
     skill_physical         = Column(Float, default=0.5)
     skill_technical        = Column(Float, default=0.5)
 
+    tak_uid          = Column(String(100), unique=True, nullable=True, index=True)  # ATAK device UID for CoT matching
+
     decision_style   = Column(String(50), default="methodical")  # aggressive/methodical/adaptive
     leadership_traits = Column(JSON, default=list)               # ["decisive", "assertive"…]
     personality_profile = Column(JSON, default=dict)
@@ -83,8 +85,10 @@ class Soldier(Base):
     created_at         = Column(DateTime(timezone=True), nullable=False, default=_now)
     updated_at         = Column(DateTime(timezone=True), nullable=False, default=_now, onupdate=_now)
 
-    assessments  = relationship("Assessment", back_populates="soldier", cascade="all, delete-orphan")
-    team_members = relationship("TeamMember",  back_populates="soldier")
+    assessments  = relationship("Assessment",       back_populates="soldier", cascade="all, delete-orphan")
+    team_members = relationship("TeamMember",        back_populates="soldier")
+    readiness    = relationship("SoldierReadiness",  back_populates="soldier", uselist=False, cascade="all, delete-orphan")
+    position     = relationship("SoldierPosition",   back_populates="soldier", uselist=False, cascade="all, delete-orphan")
 
 
 class TrainingEvent(Base):
@@ -182,6 +186,53 @@ class DetailedRating(Base):
 
 
 # ---------------------------------------------------------------------------
+# ATAK / Operational Context
+# ---------------------------------------------------------------------------
+
+class SoldierReadiness(Base):
+    __tablename__ = "soldier_readiness"
+
+    id               = Column(Integer, primary_key=True, index=True)
+    soldier_id       = Column(Integer, ForeignKey("soldiers.id", ondelete="CASCADE"), nullable=False, unique=True)
+    sleep_hours_24h  = Column(Float, default=8.0)   # hours slept in last 24h
+    sleep_hours_48h  = Column(Float, default=16.0)  # hours slept in last 48h
+    fatigue_index    = Column(Float, default=0.0)   # 0.0 = rested, 1.0 = severely fatigued (computed server-side)
+    injury_status    = Column(String(30), default="fit")  # fit / light_duty / unfit
+    updated_at       = Column(DateTime(timezone=True), nullable=False, default=_now, onupdate=_now)
+
+    soldier = relationship("Soldier", back_populates="readiness")
+
+
+class SoldierPosition(Base):
+    __tablename__ = "soldier_positions"
+
+    id                  = Column(Integer, primary_key=True, index=True)
+    soldier_id          = Column(Integer, ForeignKey("soldiers.id", ondelete="CASCADE"), nullable=False, unique=True)
+    mgrs_grid           = Column(String(20))
+    lat                 = Column(Float)
+    lon                 = Column(Float)
+    operational_status  = Column(String(30), default="available")  # available / on_mission / casualty / rest
+    updated_at          = Column(DateTime(timezone=True), nullable=False, default=_now, onupdate=_now)
+
+    soldier = relationship("Soldier", back_populates="position")
+
+
+class WeatherSnapshot(Base):
+    __tablename__ = "weather_snapshots"
+
+    id             = Column(Integer, primary_key=True, index=True)
+    mgrs_grid      = Column(String(20), nullable=False, index=True)
+    temperature_c  = Column(Float)
+    humidity_pct   = Column(Float)
+    wind_speed_kmh = Column(Float)
+    visibility_km  = Column(Float, default=10.0)
+    wbgt           = Column(Float)   # Wet Bulb Globe Temperature — military heat stress standard
+    precipitation  = Column(String(20), default="none")  # none / light / heavy
+    recorded_at    = Column(DateTime(timezone=True), nullable=False, default=_now)
+    created_at     = Column(DateTime(timezone=True), nullable=False, default=_now)
+
+
+# ---------------------------------------------------------------------------
 # Phase 02 — Team Optimization
 # ---------------------------------------------------------------------------
 
@@ -199,6 +250,10 @@ class Mission(Base):
     description          = Column(Text)
     status               = Column(String(30), default="planning") # planning/active/complete/cancelled
     selected_composition_id = Column(Integer, nullable=True)
+
+    ao_grid_center      = Column(String(20))   # MGRS grid center of Area of Operations
+    ao_radius_km        = Column(Float)
+    weather_snapshot_id = Column(Integer, ForeignKey("weather_snapshots.id", ondelete="SET NULL"), nullable=True)
 
     created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at         = Column(DateTime(timezone=True), nullable=False, default=_now)

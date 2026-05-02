@@ -1,8 +1,22 @@
 "use client";
 import { useEffect, useState } from "react";
-import { AlertTriangle, Plus, Radio, Shield, Zap } from "lucide-react";
+import { AlertTriangle, MapPin, Moon, Plus, Radio, Shield, Users, Zap } from "lucide-react";
 import { api } from "@/lib/api";
-import type { BattlespaceSession, RiskVector, SensorTrack } from "@/types";
+import type { BattlespaceSession, SensorTrack, SoldierReadiness, SoldierPosition } from "@/types";
+
+interface ForceSoldier {
+  id: number;
+  rank: string;
+  name: string;
+  unit?: string;
+  readiness: SoldierReadiness | null;
+  position: SoldierPosition | null;
+}
+
+interface ForceStatusResponse {
+  soldiers: ForceSoldier[];
+  kpis: { total: number; available: number; on_mission: number; casualty: number; rest: number; no_data: number };
+}
 
 type UnitPos = { callsign: string; grid?: string; status?: string };
 
@@ -18,15 +32,26 @@ const SEVERITY_STYLE: Record<string, { bar: string; badge: string }> = {
   low:      { bar: "bg-[#3fb950]",   badge: "bg-[#3fb950]/20 text-[#3fb950]" },
 };
 
+const OP_STYLE: Record<string, string> = {
+  available:  "bg-[#3fb950]/10 text-[#3fb950] border border-[#3fb950]/30",
+  on_mission: "bg-[#58a6ff]/10 text-[#58a6ff] border border-[#58a6ff]/30",
+  rest:       "bg-[#8b949e]/10 text-[#8b949e] border border-[#30363d]",
+  casualty:   "bg-[#f85149]/10 text-[#f85149] border border-[#f85149]/30",
+};
+
+const FATIGUE_COLOR = (fi: number) =>
+  fi <= 0.20 ? "text-[#3fb950]" : fi <= 0.50 ? "text-[#f59e0b]" : "text-[#f85149]";
+
 export default function BattlespacePage() {
-  const [sessions, setSessions]       = useState<BattlespaceSession[]>([]);
-  const [active, setActive]           = useState<BattlespaceSession | null>(null);
-  const [simResult, setSimResult]     = useState<SimResult | null>(null);
-  const [loading, setLoading]         = useState(true);
-  const [simLoading, setSimLoading]   = useState(false);
-  const [showNew, setShowNew]         = useState(false);
-  const [trackForm, setTrackForm]     = useState({ track_type: "friendly", callsign: "", grid: "" });
-  const [error, setError]             = useState("");
+  const [sessions, setSessions]         = useState<BattlespaceSession[]>([]);
+  const [active, setActive]             = useState<BattlespaceSession | null>(null);
+  const [simResult, setSimResult]       = useState<SimResult | null>(null);
+  const [forceStatus, setForceStatus]   = useState<ForceStatusResponse | null>(null);
+  const [loading, setLoading]           = useState(true);
+  const [simLoading, setSimLoading]     = useState(false);
+  const [showNew, setShowNew]           = useState(false);
+  const [trackForm, setTrackForm]       = useState({ track_type: "friendly", callsign: "", grid: "" });
+  const [error, setError]               = useState("");
   const [form, setForm] = useState({
     session_name: "", scenario_description: "",
     intel_report: "",
@@ -35,9 +60,13 @@ export default function BattlespacePage() {
   });
 
   useEffect(() => {
-    api.get<BattlespaceSession[]>("/api/v1/battlespace")
-      .then(setSessions)
-      .finally(() => setLoading(false));
+    Promise.all([
+      api.get<BattlespaceSession[]>("/api/v1/battlespace"),
+      api.get<ForceStatusResponse>("/api/v1/soldiers/force-status").catch(() => null),
+    ]).then(([s, fs]) => {
+      setSessions(s);
+      setForceStatus(fs);
+    }).finally(() => setLoading(false));
   }, []);
 
   async function openSession(session: BattlespaceSession) {
@@ -46,7 +75,7 @@ export default function BattlespacePage() {
     setSimResult(null);
   }
 
-  async function handleCreate(e: React.FormEvent) {
+  async function handleCreate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
     try {
@@ -71,7 +100,7 @@ export default function BattlespacePage() {
     }
   }
 
-  async function handleAddTrack(e: React.FormEvent) {
+  async function handleAddTrack(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     if (!active) return;
     setError("");
@@ -187,6 +216,89 @@ export default function BattlespacePage() {
         </div>
       )}
 
+      {/* ── Force Status Panel ── */}
+      {forceStatus && (
+        <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Users size={15} className="text-[#f59e0b]" />
+            <h2 className="text-sm font-semibold text-white">Force Status</h2>
+            <span className="ml-auto text-[10px] text-[#6e7681]">{forceStatus.kpis.total} soldiers</span>
+          </div>
+
+          {/* KPI row */}
+          <div className="grid grid-cols-4 gap-2 mb-4">
+            {[
+              { label: "Available",  count: forceStatus.kpis.available,  color: "text-[#3fb950]" },
+              { label: "On Mission", count: forceStatus.kpis.on_mission,  color: "text-[#58a6ff]" },
+              { label: "Rest",       count: forceStatus.kpis.rest,        color: "text-[#8b949e]" },
+              { label: "Casualty",   count: forceStatus.kpis.casualty,    color: "text-[#f85149]" },
+            ].map(k => (
+              <div key={k.label} className="bg-[#0d1117] rounded p-2.5 text-center">
+                <p className={`text-xl font-black ${k.color}`}>{k.count}</p>
+                <p className="text-[10px] text-[#8b949e]">{k.label}</p>
+              </div>
+            ))}
+          </div>
+
+          {/* Soldier roster */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+            {forceStatus.soldiers.map(s => {
+              const opStatus = s.position?.operational_status ?? "no_data";
+              const styleClass = OP_STYLE[opStatus] ?? "bg-[#21262d] text-[#8b949e] border border-[#30363d]";
+              const fatigue    = s.readiness?.fatigue_index;
+
+              return (
+                <div key={s.id} className="bg-[#0d1117] rounded-md px-3 py-2.5 flex items-start gap-2.5">
+                  {/* Status dot */}
+                  <div className={`mt-0.5 w-2 h-2 rounded-full shrink-0 ${
+                    opStatus === "available"  ? "bg-[#3fb950]" :
+                    opStatus === "on_mission" ? "bg-[#58a6ff]" :
+                    opStatus === "casualty"   ? "bg-[#f85149]" :
+                    opStatus === "rest"       ? "bg-[#8b949e]" : "bg-[#30363d]"
+                  }`} />
+
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-xs text-white truncate">
+                        {s.rank} {s.name}
+                      </span>
+                      <span className={`text-[9px] px-1.5 py-0.5 rounded capitalize shrink-0 ${styleClass}`}>
+                        {opStatus === "no_data" ? "unknown" : opStatus.replace("_", " ")}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                      {s.unit && (
+                        <span className="text-[10px] text-[#6e7681]">{s.unit}</span>
+                      )}
+                      {s.position?.mgrs_grid && (
+                        <span className="flex items-center gap-0.5 text-[10px] text-[#f59e0b] font-mono">
+                          <MapPin size={9} />{s.position.mgrs_grid}
+                        </span>
+                      )}
+                      {fatigue != null && (
+                        <span className={`flex items-center gap-0.5 text-[10px] ${FATIGUE_COLOR(fatigue)}`}>
+                          <Moon size={9} />{Math.round(fatigue * 100)}% fatigue
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {forceStatus.kpis.no_data > 0 && (
+              <div className="bg-[#0d1117] rounded-md px-3 py-2.5 flex items-center gap-2 col-span-full">
+                <div className="w-2 h-2 rounded-full bg-[#30363d] shrink-0" />
+                <span className="text-[10px] text-[#6e7681]">
+                  {forceStatus.kpis.no_data} soldier{forceStatus.kpis.no_data !== 1 ? "s" : ""} with no position data
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Sessions + Active Session ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Sessions list */}
         <div className="space-y-2">
@@ -246,11 +358,12 @@ export default function BattlespacePage() {
                   ) : active.friendly_units.map((u, i) => {
                     const unit = u as UnitPos;
                     return (
-                    <p key={i} className="text-xs text-white">
-                      {unit.callsign}
-                      {unit.grid && <span className="ml-1 text-[#8b949e]">{unit.grid}</span>}
-                    </p>
-                  );})}
+                      <p key={i} className="text-xs text-white">
+                        {unit.callsign}
+                        {unit.grid && <span className="ml-1 text-[#8b949e]">{unit.grid}</span>}
+                      </p>
+                    );
+                  })}
                 </div>
                 <div className="bg-[#0d1117] rounded-md p-3">
                   <div className="flex items-center gap-1.5 mb-2">
@@ -262,11 +375,12 @@ export default function BattlespacePage() {
                   ) : active.known_enemy.map((u, i) => {
                     const unit = u as UnitPos;
                     return (
-                    <p key={i} className="text-xs text-white">
-                      {unit.callsign}
-                      {unit.grid && <span className="ml-1 text-[#8b949e]">{unit.grid}</span>}
-                    </p>
-                  );})}
+                      <p key={i} className="text-xs text-white">
+                        {unit.callsign}
+                        {unit.grid && <span className="ml-1 text-[#8b949e]">{unit.grid}</span>}
+                      </p>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -340,7 +454,7 @@ export default function BattlespacePage() {
                               {m.move_type}
                             </span>
                             <span className={`text-[10px] ${
-                              m.probability === "high" ? "text-[#f85149]" :
+                              m.probability === "high"   ? "text-[#f85149]" :
                               m.probability === "medium" ? "text-[#f59e0b]" : "text-[#3fb950]"
                             }`}>{m.probability} prob.</span>
                           </div>
@@ -382,7 +496,7 @@ export default function BattlespacePage() {
                       {simResult.recommendations.map((r, i) => (
                         <div key={i} className="flex gap-3 bg-[#0d1117] rounded-md p-3">
                           <span className={`text-[10px] px-1.5 py-0.5 h-fit rounded font-bold uppercase shrink-0 ${
-                            r.priority === "immediate" ? "bg-[#f85149]/20 text-[#f85149]" :
+                            r.priority === "immediate"  ? "bg-[#f85149]/20 text-[#f85149]" :
                             r.priority === "short_term" ? "bg-[#f59e0b]/20 text-[#f59e0b]" :
                             "bg-[#21262d] text-[#8b949e]"
                           }`}>{r.priority}</span>

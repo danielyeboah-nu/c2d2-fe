@@ -118,6 +118,36 @@ export interface BattalionOverview {
   }[];
 }
 
+export interface SoldierReadiness {
+  soldier_id: number;
+  sleep_hours_24h: number;
+  sleep_hours_48h: number;
+  fatigue_index: number;          // 0.0 = rested, 1.0 = severely fatigued
+  injury_status: "fit" | "light_duty" | "unfit";
+  updated_at?: string;
+}
+
+export interface SoldierPosition {
+  soldier_id: number;
+  mgrs_grid?: string;
+  lat?: number;
+  lon?: number;
+  operational_status: "available" | "on_mission" | "casualty" | "rest";
+  updated_at?: string;
+}
+
+export interface WeatherSnapshot {
+  id: number;
+  mgrs_grid: string;
+  temperature_c?: number;
+  humidity_pct?: number;
+  wind_speed_kmh?: number;
+  visibility_km?: number;
+  wbgt?: number;                  // Wet Bulb Globe Temperature
+  precipitation: "none" | "light" | "heavy";
+  recorded_at?: string;
+}
+
 export interface Mission {
   id: number;
   mission_name: string;
@@ -130,6 +160,9 @@ export interface Mission {
   description?: string;
   status: string;
   selected_composition_id?: number;
+  ao_grid_center?: string;        // MGRS grid center of Area of Operations
+  ao_radius_km?: number;
+  weather_snapshot_id?: number;
   compositions?: TeamComposition[];
 }
 
@@ -137,8 +170,9 @@ export interface TeamMember {
   id: number;
   soldier_id: number;
   role: string;
-  fit_score: number;
-  fit_notes?: string;
+  fit_score: number;              // contextual score (readiness + weather applied)
+  base_fit_score?: number;        // raw skill-vector score before modifiers
+  fit_notes?: string;             // human-readable modifier notes (e.g. "4.2h sleep ×0.75")
   name: string;
   unit?: string;
 }

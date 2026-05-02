@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.app.db.database import get_db
-from backend.app.db.models import Mission, Soldier, TeamComposition, TeamMember, User
+from backend.app.db.models import Mission, Soldier, SoldierReadiness, SoldierPosition, TeamComposition, TeamMember, User, WeatherSnapshot
 from backend.app.deps import get_current_user
 from backend.app.services.team_optimizer import optimize_team
 
@@ -25,6 +25,8 @@ class MissionCreate(BaseModel):
     special_requirements: list[str] = []
     duration_hours: float = 24.0
     description: str | None = None
+    ao_grid_center: str | None = None   # MGRS grid center of AO (e.g. "38SMB12345678")
+    ao_radius_km: float | None = None
 
 
 class MissionUpdate(BaseModel):
@@ -37,6 +39,8 @@ class MissionUpdate(BaseModel):
     duration_hours: float | None = None
     description: str | None = None
     status: str | None = None
+    ao_grid_center: str | None = None
+    ao_radius_km: float | None = None
 
 
 def _mission_dict(m: Mission, include_compositions: bool = False) -> dict:
@@ -52,6 +56,9 @@ def _mission_dict(m: Mission, include_compositions: bool = False) -> dict:
         "description": m.description,
         "status": m.status,
         "selected_composition_id": m.selected_composition_id,
+        "ao_grid_center": m.ao_grid_center,
+        "ao_radius_km": m.ao_radius_km,
+        "weather_snapshot_id": m.weather_snapshot_id,
         "created_at": m.created_at.isoformat() if m.created_at else None,
     }
     if include_compositions:
@@ -191,6 +198,40 @@ def optimize_mission_team(
         for s in soldiers
     ]
 
+    # Build readiness map: merge sleep/injury data with operational status
+    readiness_map: dict[int, dict] = {}
+    for r in db.query(SoldierReadiness).all():
+        readiness_map[r.soldier_id] = {
+            "sleep_hours_24h": r.sleep_hours_24h,
+            "sleep_hours_48h": r.sleep_hours_48h,
+            "fatigue_index":   r.fatigue_index,
+            "injury_status":   r.injury_status,
+        }
+    for p in db.query(SoldierPosition).all():
+        if p.soldier_id in readiness_map:
+            readiness_map[p.soldier_id]["operational_status"] = p.operational_status
+        else:
+            readiness_map[p.soldier_id] = {"operational_status": p.operational_status}
+
+    # Fetch latest weather for the mission AO grid (if set)
+    weather: dict | None = None
+    if m.ao_grid_center:
+        snap = (
+            db.query(WeatherSnapshot)
+            .filter(WeatherSnapshot.mgrs_grid == m.ao_grid_center)
+            .order_by(WeatherSnapshot.recorded_at.desc())
+            .first()
+        )
+        if snap:
+            weather = {
+                "temperature_c":  snap.temperature_c,
+                "humidity_pct":   snap.humidity_pct,
+                "wind_speed_kmh": snap.wind_speed_kmh,
+                "visibility_km":  snap.visibility_km,
+                "wbgt":           snap.wbgt,
+                "precipitation":  snap.precipitation,
+            }
+
     mission_dict = {
         "mission_name": m.mission_name,
         "mission_type": m.mission_type,
@@ -200,7 +241,10 @@ def optimize_mission_team(
         "special_requirements": m.special_requirements or [],
     }
 
-    compositions = optimize_team(mission_dict, soldier_dicts, n_options=n_options)
+    compositions = optimize_team(
+        mission_dict, soldier_dicts, n_options=n_options,
+        readiness_map=readiness_map, weather=weather,
+    )
 
     saved = []
     for comp_data in compositions:
@@ -220,6 +264,7 @@ def optimize_mission_team(
                 soldier_id=member_data["soldier_id"],
                 role=member_data.get("role", "rifleman"),
                 fit_score=member_data.get("fit_score", 0.0),
+                fit_notes=member_data.get("fit_notes"),
             )
             db.add(member)
 

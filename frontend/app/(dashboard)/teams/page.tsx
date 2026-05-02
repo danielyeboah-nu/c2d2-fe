@@ -1,15 +1,15 @@
 "use client";
 import { useEffect, useState } from "react";
-import { CheckCircle, ChevronDown, ChevronUp, Plus, Zap } from "lucide-react";
+import { CheckCircle, ChevronDown, ChevronUp, Cloud, Plus, Thermometer, Wind, Zap } from "lucide-react";
 import { api } from "@/lib/api";
-import type { Mission, TeamComposition } from "@/types";
+import type { Mission, TeamComposition, WeatherSnapshot } from "@/types";
 
-const MISSION_TYPES = ["attack","defend","ambush","raid","mtc","recon"];
-const THREAT_LEVELS = ["low","medium","high","extreme"];
-const TERRAIN_TYPES = ["general","urban","mountain","jungle","desert","arctic"];
+const MISSION_TYPES  = ["attack","defend","ambush","raid","mtc","recon"];
+const THREAT_LEVELS  = ["low","medium","high","extreme"];
+const TERRAIN_TYPES  = ["general","urban","mountain","jungle","desert","arctic"];
 
 function FitBar({ score }: { score: number }) {
-  const pct = Math.round(score * 100);
+  const pct   = Math.round(score * 100);
   const color = pct >= 75 ? "bg-[#3fb950]" : pct >= 55 ? "bg-[#f59e0b]" : "bg-[#f85149]";
   return (
     <div className="flex items-center gap-2">
@@ -21,32 +21,96 @@ function FitBar({ score }: { score: number }) {
   );
 }
 
+function WeatherCard({ grid }: { grid: string }) {
+  const [weather, setWeather]   = useState<WeatherSnapshot | null>(null);
+  const [notFound, setNotFound] = useState(false);
+
+  useEffect(() => {
+    api.get<WeatherSnapshot>(`/api/v1/weather/latest?grid=${encodeURIComponent(grid)}`)
+      .then(setWeather)
+      .catch(() => setNotFound(true));
+  }, [grid]);
+
+  if (notFound) {
+    return (
+      <div className="flex items-center gap-1.5 text-[10px] text-[#6e7681]">
+        <Cloud size={11} /> No weather data for {grid}
+      </div>
+    );
+  }
+  if (!weather) return null;
+
+  const wbgtColor = !weather.wbgt ? "text-[#8b949e]"
+    : weather.wbgt > 32 ? "text-[#f85149]"
+    : weather.wbgt > 28 ? "text-[#f59e0b]"
+    : "text-[#3fb950]";
+
+  return (
+    <div className="flex items-center flex-wrap gap-3 text-[10px] bg-[#0d1117] rounded px-3 py-2 border border-[#30363d]">
+      <div className="flex items-center gap-1 text-[#8b949e]">
+        <Cloud size={11} /> <span className="font-mono text-white">{grid}</span>
+      </div>
+      {weather.temperature_c != null && (
+        <div className="flex items-center gap-1">
+          <Thermometer size={11} className="text-[#f59e0b]" />
+          <span className="text-white">{weather.temperature_c.toFixed(0)}°C</span>
+        </div>
+      )}
+      {weather.wbgt != null && (
+        <div className="flex items-center gap-1">
+          <span className="text-[#8b949e]">WBGT</span>
+          <span className={`font-semibold ${wbgtColor}`}>{weather.wbgt.toFixed(0)}°C</span>
+        </div>
+      )}
+      {weather.wind_speed_kmh != null && (
+        <div className="flex items-center gap-1">
+          <Wind size={11} className="text-[#58a6ff]" />
+          <span className="text-white">{weather.wind_speed_kmh.toFixed(0)} km/h</span>
+        </div>
+      )}
+      {weather.visibility_km != null && (
+        <div className="flex items-center gap-1">
+          <span className="text-[#8b949e]">Vis</span>
+          <span className={weather.visibility_km < 1 ? "text-[#f85149]" : "text-white"}>
+            {weather.visibility_km.toFixed(1)} km
+          </span>
+        </div>
+      )}
+      <span className="text-[#6e7681] capitalize">{weather.precipitation !== "none" ? weather.precipitation + " precip." : ""}</span>
+    </div>
+  );
+}
+
 export default function TeamsPage() {
-  const [missions, setMissions]       = useState<Mission[]>([]);
-  const [loading, setLoading]         = useState(true);
-  const [showNew, setShowNew]         = useState(false);
-  const [optimizing, setOptimizing]   = useState<number | null>(null);
-  const [expanded, setExpanded]       = useState<number | null>(null);
-  const [selecting, setSelecting]     = useState<number | null>(null);
-  const [error, setError]             = useState("");
+  const [missions, setMissions]     = useState<Mission[]>([]);
+  const [loading, setLoading]       = useState(true);
+  const [showNew, setShowNew]       = useState(false);
+  const [optimizing, setOptimizing] = useState<number | null>(null);
+  const [expanded, setExpanded]     = useState<number | null>(null);
+  const [selecting, setSelecting]   = useState<number | null>(null);
+  const [error, setError]           = useState("");
 
   const [form, setForm] = useState({
     mission_name: "", mission_type: "attack", threat_level: "medium",
     terrain_type: "general", required_team_size: 9, duration_hours: 24,
-    description: "",
+    description: "", ao_grid_center: "",
   });
 
   useEffect(() => {
     api.get<Mission[]>("/api/v1/missions").then(setMissions).finally(() => setLoading(false));
   }, []);
 
-  async function handleCreate(e: React.FormEvent) {
+  async function handleCreate(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setError("");
     try {
-      const m = await api.post<Mission>("/api/v1/missions", form);
+      const body = { ...form, ao_grid_center: form.ao_grid_center || undefined };
+      const m = await api.post<Mission>("/api/v1/missions", body);
       setMissions(prev => [m, ...prev]);
       setShowNew(false);
+      setForm({ mission_name: "", mission_type: "attack", threat_level: "medium",
+        terrain_type: "general", required_team_size: 9, duration_hours: 24,
+        description: "", ao_grid_center: "" });
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed");
     }
@@ -77,9 +141,7 @@ export default function TeamsPage() {
       setMissions(prev => prev.map(m => {
         if (m.id !== missionId) return m;
         return {
-          ...m,
-          status: "active",
-          selected_composition_id: compositionId,
+          ...m, status: "active", selected_composition_id: compositionId,
           compositions: (m.compositions ?? []).map(c => ({ ...c, is_selected: c.id === compositionId })),
         };
       }));
@@ -121,8 +183,8 @@ export default function TeamsPage() {
                 className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded text-sm text-white focus:outline-none focus:border-[#f59e0b]" />
             </div>
             {[
-              { id: "mission_type", label: "Type", opts: MISSION_TYPES },
-              { id: "threat_level", label: "Threat", opts: THREAT_LEVELS },
+              { id: "mission_type", label: "Type",    opts: MISSION_TYPES },
+              { id: "threat_level", label: "Threat",  opts: THREAT_LEVELS },
               { id: "terrain_type", label: "Terrain", opts: TERRAIN_TYPES },
             ].map(f => (
               <div key={f.id}>
@@ -139,6 +201,15 @@ export default function TeamsPage() {
               <input type="number" min={2} max={50} value={form.required_team_size}
                 onChange={e => setForm(p => ({ ...p, required_team_size: parseInt(e.target.value) }))}
                 className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded text-sm text-white focus:outline-none" />
+            </div>
+            {/* AO Grid — ties into ATAK/weather modifiers */}
+            <div className="col-span-2">
+              <label className="block text-[10px] text-[#8b949e] uppercase tracking-wider mb-1">
+                AO Grid (MGRS) <span className="text-[#6e7681] normal-case">— used for weather modifiers</span>
+              </label>
+              <input value={form.ao_grid_center} placeholder="e.g. 38SMB12345678 (optional)"
+                onChange={e => setForm(p => ({ ...p, ao_grid_center: e.target.value }))}
+                className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded text-sm font-mono text-white focus:outline-none focus:border-[#f59e0b]" />
             </div>
             <div className="col-span-2">
               <label className="block text-[10px] text-[#8b949e] uppercase tracking-wider mb-1">Description</label>
@@ -170,13 +241,13 @@ export default function TeamsPage() {
               {/* Mission Header */}
               <div className="px-5 py-4 flex items-center gap-4">
                 <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
                     <h3 className="text-white font-semibold">{mission.mission_name}</h3>
                     <span className={`text-[10px] font-bold uppercase ${severityColor[mission.threat_level] ?? "text-[#8b949e]"}`}>
                       {mission.threat_level} threat
                     </span>
                     <span className={`text-[10px] px-1.5 py-0.5 rounded ${
-                      mission.status === "active" ? "bg-[#3fb950]/20 text-[#3fb950]" :
+                      mission.status === "active"   ? "bg-[#3fb950]/20 text-[#3fb950]" :
                       mission.status === "planning" ? "bg-[#f59e0b]/20 text-[#f59e0b]" :
                       "bg-[#30363d] text-[#8b949e]"
                     }`}>{mission.status}</span>
@@ -184,9 +255,12 @@ export default function TeamsPage() {
                       <CheckCircle size={14} className="text-[#3fb950]" />
                     )}
                   </div>
-                  <p className="text-[10px] text-[#8b949e] capitalize">
+                  <p className="text-[10px] text-[#8b949e] capitalize mb-1">
                     {mission.mission_type} · {mission.terrain_type} · {mission.required_team_size}-person team
                   </p>
+                  {mission.ao_grid_center && (
+                    <WeatherCard grid={mission.ao_grid_center} />
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -233,7 +307,7 @@ export default function TeamsPage() {
 
                       <div className="mb-3">
                         <div className="flex items-center justify-between text-[10px] text-[#8b949e] mb-1">
-                          <span>Team Fit Score</span>
+                          <span>Contextual Fit Score</span>
                         </div>
                         <FitBar score={comp.fit_score} />
                       </div>
@@ -244,12 +318,27 @@ export default function TeamsPage() {
 
                       <div className="grid grid-cols-2 gap-2">
                         {comp.members.map(m => (
-                          <div key={m.id} className="flex items-center justify-between bg-[#0d1117] rounded px-3 py-2">
-                            <div>
-                              <span className="text-xs text-white">{m.name}</span>
-                              <span className="ml-2 text-[10px] text-[#8b949e] capitalize">{m.role}</span>
+                          <div key={m.id} className="bg-[#0d1117] rounded px-3 py-2">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <span className="text-xs text-white">{m.name}</span>
+                                <span className="ml-2 text-[10px] text-[#8b949e] capitalize">{m.role}</span>
+                              </div>
+                              <div className="text-right">
+                                <span className={`text-[10px] font-bold ${
+                                  Math.round(m.fit_score * 100) >= 75 ? "text-[#3fb950]" :
+                                  Math.round(m.fit_score * 100) >= 55 ? "text-[#f59e0b]" : "text-[#f85149]"
+                                }`}>{Math.round(m.fit_score * 100)}%</span>
+                                {m.base_fit_score != null && m.base_fit_score !== m.fit_score && (
+                                  <span className="ml-1 text-[9px] text-[#6e7681]">
+                                    (base {Math.round(m.base_fit_score * 100)}%)
+                                  </span>
+                                )}
+                              </div>
                             </div>
-                            <span className="text-[10px] text-[#f59e0b]">{Math.round(m.fit_score * 100)}%</span>
+                            {m.fit_notes && (
+                              <p className="text-[9px] text-[#f59e0b] mt-1 leading-tight">{m.fit_notes}</p>
+                            )}
                           </div>
                         ))}
                       </div>

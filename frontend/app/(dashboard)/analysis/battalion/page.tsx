@@ -32,11 +32,6 @@ export default function BattalionOverviewPage() {
   if (error)   return <div className="p-6 text-[#f85149]">{error}</div>;
   if (!data)   return null;
 
-  // Radar data for each unit
-  function unitRadar(avgs: Record<string, number>) {
-    return LDR_FIELDS.map(f => ({ subject: f, value: avgs[f] ?? 0 }));
-  }
-
   // Bar chart: per-unit eval count
   const barData = data.units.map(u => ({
     unit: u.unit.replace(" Co", "").replace("Alpha", "A").replace("Bravo", "B").replace("Charlie", "C"),
@@ -105,30 +100,38 @@ export default function BattalionOverviewPage() {
         )}
       </div>
 
-      {/* Per-unit radar grid */}
-      {data.units.filter(u => Object.keys(u.leader_averages).length > 0).length > 0 && (
-        <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-5">
-          <h3 className="text-sm font-semibold text-white mb-4">Company Radar Charts</h3>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            {data.units
-              .filter(u => Object.keys(u.leader_averages).length > 0)
-              .map((u, i) => (
-                <div key={u.unit} className="bg-[#0d1117] rounded-lg p-3">
-                  <div className="text-xs font-semibold text-white mb-0.5">{u.unit}</div>
-                  <div className="text-[10px] text-[#8b949e] mb-2">{u.eval_count} evals · {u.soldier_count} soldiers</div>
-                  <ResponsiveContainer width="100%" height={160}>
-                    <RadarChart data={unitRadar(u.leader_averages)}>
-                      <PolarGrid stroke="#30363d" />
-                      <PolarAngleAxis dataKey="subject" tick={{ fill: "#6e7681", fontSize: 9 }} />
-                      <Radar dataKey="value" stroke={UNIT_COLORS[i % UNIT_COLORS.length]}
-                        fill={UNIT_COLORS[i % UNIT_COLORS.length]} fillOpacity={0.25} />
-                    </RadarChart>
-                  </ResponsiveContainer>
-                </div>
-              ))}
+      {/* Per-unit overlaid radar comparison */}
+      {(() => {
+        const active = data.units.filter(u => Object.keys(u.leader_averages).length > 0);
+        if (!active.length) return null;
+        const companyRadar = LDR_FIELDS.map(f => {
+          const entry: Record<string, string | number> = { subject: f };
+          active.forEach(u => { entry[u.unit] = u.leader_averages[f] ?? 0; });
+          return entry;
+        });
+        return (
+          <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-white mb-3">Company Performance Comparison</h3>
+            <ResponsiveContainer width="100%" height={260}>
+              <RadarChart data={companyRadar}>
+                <PolarGrid stroke="#30363d" />
+                <PolarAngleAxis dataKey="subject" tick={{ fill: "#8b949e", fontSize: 11 }} />
+                {active.map((u, i) => (
+                  <Radar
+                    key={u.unit}
+                    name={u.unit}
+                    dataKey={u.unit}
+                    stroke={UNIT_COLORS[i % UNIT_COLORS.length]}
+                    fill={UNIT_COLORS[i % UNIT_COLORS.length]}
+                    fillOpacity={0.2}
+                  />
+                ))}
+                <Legend wrapperStyle={{ fontSize: 11, color: "#8b949e" }} />
+              </RadarChart>
+            </ResponsiveContainer>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Summary table */}
       <div className="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">

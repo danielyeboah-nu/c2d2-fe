@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0d1117"
+    android:padding="12dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:gap="12dp">
+
+        <!-- Header -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="C2D2 — Combat Decision Dominance"
+            android:textColor="#f59e0b"
+            android:textSize="14sp"
+            android:textStyle="bold"
+            android:paddingBottom="8dp" />
+
+        <!-- ── SETTINGS SECTION ─────────────────────────────── -->
+        <TextView style="@style/SectionHeader" android:text="SETTINGS" />
+
+        <EditText
+            android:id="@+id/edit_token"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            style="@style/FieldInput"
+            android:hint="Bearer token (from web login)"
+            android:inputType="textPassword" />
+
+        <Spinner
+            android:id="@+id/spinner_soldier"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            style="@style/SpinnerStyle" />
+
+        <Button
+            android:id="@+id/btn_save_settings"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            style="@style/PrimaryButton"
+            android:text="Save &amp; Link Device" />
+
+        <TextView
+            android:id="@+id/tv_settings_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            style="@style/StatusText" />
+
+        <!-- ── READINESS SECTION ────────────────────────────── -->
+        <TextView style="@style/SectionHeader" android:text="READINESS" android:layout_marginTop="12dp" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gap="8dp">
+            <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+                <TextView style="@style/FieldLabel" android:text="Sleep / 24h (hrs)" />
+                <EditText android:id="@+id/edit_sleep_24h" style="@style/FieldInput" android:inputType="numberDecimal" android:hint="8.0" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+            </LinearLayout>
+            <LinearLayout android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1" android:orientation="vertical">
+                <TextView style="@style/FieldLabel" android:text="Sleep / 48h (hrs)" />
+                <EditText android:id="@+id/edit_sleep_48h" style="@style/FieldInput" android:inputType="numberDecimal" android:hint="16.0" android:layout_width="match_parent" android:layout_height="wrap_content"/>
+            </LinearLayout>
+        </LinearLayout>
+
+        <TextView style="@style/FieldLabel" android:text="Injury Status" />
+        <Spinner android:id="@+id/spinner_injury" android:layout_width="match_parent" android:layout_height="48dp" style="@style/SpinnerStyle" />
+
+        <TextView style="@style/FieldLabel" android:text="Operational Status" />
+        <Spinner android:id="@+id/spinner_op_status" android:layout_width="match_parent" android:layout_height="48dp" style="@style/SpinnerStyle" />
+
+        <Button
+            android:id="@+id/btn_submit_readiness"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            style="@style/PrimaryButton"
+            android:text="Submit Readiness" />
+
+        <TextView
+            android:id="@+id/tv_readiness_result"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            style="@style/StatusText" />
+
+        <!-- ── TEAMS SECTION ───────────────────────────────── -->
+        <TextView style="@style/SectionHeader" android:text="TEAM OVERLAY" android:layout_marginTop="12dp" />
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gap="8dp">
+            <EditText
+                android:id="@+id/edit_mission_id"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="40dp"
+                style="@style/FieldInput"
+                android:hint="Mission ID"
+                android:inputType="number" />
+            <Button
+                android:id="@+id/btn_load_team"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                style="@style/PrimaryButton"
+                android:text="Load" />
+            <Button
+                android:id="@+id/btn_clear_overlay"
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                style="@style/SecondaryButton"
+                android:text="Clear" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/tv_team_result"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            style="@style/StatusText"
+            android:layout_marginBottom="24dp" />
+
+    </LinearLayout>
+</ScrollView>

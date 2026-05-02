@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
+import asyncio
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -16,15 +18,42 @@ from backend.app.routes.battlespace import router as battlespace_router
 from backend.app.routes.events import router as events_router
 from backend.app.routes.missions import router as missions_router
 from backend.app.routes.soldiers import router as soldiers_router
+from backend.app.routes.cot import router as cot_router
+from backend.app.routes.weather import router as weather_router
 from backend.app.services.auth_service import hash_password
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize DB tables and seed default admin user on first run."""
+    """Initialize DB tables, seed default admin, and start background services."""
     init_db()
     _seed_default_user()
+
+    # Start TAK Server CoT subscriber if configured
+    settings = get_settings()
+    tak_task = None
+    if settings.tak_server_host:
+        from backend.app.services.tak_subscriber import run_tak_subscriber
+        tak_task = asyncio.create_task(
+            run_tak_subscriber(
+                settings.tak_server_host,
+                settings.tak_server_port,
+                settings.tak_server_tls,
+                settings.tak_server_cert,
+            )
+        )
+        logging.getLogger(__name__).info(
+            "TAK subscriber started → %s:%d", settings.tak_server_host, settings.tak_server_port
+        )
+
     yield
+
+    if tak_task:
+        tak_task.cancel()
+        try:
+            await tak_task
+        except asyncio.CancelledError:
+            pass
 
 
 def _seed_default_user() -> None:
@@ -82,6 +111,8 @@ def create_app() -> FastAPI:
     app.include_router(assessments_router, prefix=prefix)
     app.include_router(missions_router,    prefix=prefix)
     app.include_router(battlespace_router, prefix=prefix)
+    app.include_router(weather_router,     prefix=prefix)
+    app.include_router(cot_router,         prefix=prefix)
     app.include_router(analysis_router,    prefix=prefix)
 
     @app.exception_handler(Exception)

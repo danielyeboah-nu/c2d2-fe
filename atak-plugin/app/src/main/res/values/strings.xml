@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">C2D2</string>
+    <string name="plugin_name">C2D2 — Combat Decision Dominance</string>
+
+    <string-array name="injury_statuses">
+        <item>Fit</item>
+        <item>Light Duty</item>
+        <item>Unfit</item>
+    </string-array>
+
+    <string-array name="op_statuses">
+        <item>Available</item>
+        <item>On Mission</item>
+        <item>Rest</item>
+        <item>Casualty</item>
+    </string-array>
+</resources>
