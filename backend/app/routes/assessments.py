@@ -8,9 +8,10 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.app.db.database import get_db
-from backend.app.db.models import Assessment, Soldier, User
+from backend.app.db.models import Assessment, DetailedRating, Soldier, User
 from backend.app.deps import get_current_user
 from backend.app.services.ai_scorer import score_assessment
+from backend.app.services.eval_reference import aggregate_category_scores, score_from_rating
 from backend.app.services.ocr_service import extract_text_from_image, save_upload_locally
 from backend.app.services.stt_service import save_audio_locally, transcribe_audio
 
@@ -20,6 +21,27 @@ router = APIRouter(prefix="/assessments", tags=["Assessments — Phase 01"])
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
+
+class SubtaskRating(BaseModel):
+    task_group: str
+    task_name: str = ""
+    subtask_number: int
+    subtask_description: str = ""
+    rating: str  # T / P / U
+
+
+class StructuredEvalCreate(BaseModel):
+    """Full structured evaluation — one of leader/unit/steo."""
+    soldier_id: int
+    event_id: int | None = None
+    eval_category: str              # leader_eval / unit_eval / steo_eval
+    steo_mission_name: str | None = None
+    leader_ratings: list[SubtaskRating] = []
+    unit_ratings: list[SubtaskRating] = []
+    steo_ratings: list[SubtaskRating] = []
+    notes: str | None = None
+    run_ai_scoring: bool = True
+
 
 class AssessmentCreate(BaseModel):
     soldier_id: int
@@ -56,6 +78,19 @@ def _assessment_dict(a: Assessment) -> dict:
         "score_stress_response": a.score_stress_response,
         "score_tactical": a.score_tactical,
         "score_communication": a.score_communication,
+        # Structured eval fields
+        "eval_category": a.eval_category,
+        "steo_mission_name": a.steo_mission_name,
+        "ldr_planning": a.ldr_planning,
+        "ldr_atd": a.ldr_atd,
+        "ldr_time_mgmt": a.ldr_time_mgmt,
+        "ldr_decisiveness": a.ldr_decisiveness,
+        "ldr_tactics": a.ldr_tactics,
+        "ump_planning": a.ump_planning,
+        "ump_atd": a.ump_atd,
+        "ump_time_mgmt": a.ump_time_mgmt,
+        "ump_decisiveness": a.ump_decisiveness,
+        "ump_tactics": a.ump_tactics,
         "notes": a.notes,
         "created_at": a.created_at.isoformat() if a.created_at else None,
         "updated_at": a.updated_at.isoformat() if a.updated_at else None,
@@ -93,6 +128,89 @@ def list_assessments(
     if soldier_id:
         q = q.filter(Assessment.soldier_id == soldier_id)
     return [_assessment_dict(a) for a in q.all()]
+
+
+@router.post("/submit-structured", status_code=status.HTTP_201_CREATED)
+def submit_structured_eval(
+    body: StructuredEvalCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Submit a full structured evaluation (Leader, Unit, or SQD ST&EO) with T/P/U ratings."""
+    soldier = db.query(Soldier).filter(Soldier.id == body.soldier_id).first()
+    if not soldier:
+        raise HTTPException(404, detail="Soldier not found")
+
+    ratings_map = {
+        "leader_eval": body.leader_ratings,
+        "unit_eval":   body.unit_ratings,
+        "steo_eval":   body.steo_ratings,
+    }
+    active_ratings = [r.model_dump() for r in ratings_map.get(body.eval_category, [])]
+
+    # Aggregate category scores
+    cat_scores = aggregate_category_scores(active_ratings, body.eval_category)
+
+    a = Assessment(
+        soldier_id=body.soldier_id,
+        event_id=body.event_id,
+        evaluator_id=current_user.id,
+        assessment_type="structured_eval",
+        capture_method="manual",
+        eval_category=body.eval_category,
+        steo_mission_name=body.steo_mission_name,
+        notes=body.notes,
+        raw_capture=body.notes,
+        owner_user_id=current_user.id,
+        created_by_user_id=current_user.id,
+    )
+
+    # Populate category scores into the correct columns
+    if body.eval_category == "leader_eval":
+        a.ldr_planning     = cat_scores.get("Planning")
+        a.ldr_atd          = cat_scores.get("Attention to Detail")
+        a.ldr_time_mgmt    = cat_scores.get("Time Management")
+        a.ldr_decisiveness = cat_scores.get("Decisiveness")
+        a.ldr_tactics      = cat_scores.get("Tactics")
+    elif body.eval_category == "unit_eval":
+        a.ump_planning     = cat_scores.get("Planning")
+        a.ump_atd          = cat_scores.get("Attention to Detail")
+        a.ump_time_mgmt    = cat_scores.get("Time Management")
+        a.ump_decisiveness = cat_scores.get("Decisiveness")
+        a.ump_tactics      = cat_scores.get("Tactics")
+
+    # AI scoring on notes if provided
+    if body.run_ai_scoring and body.notes:
+        context = {"rank": soldier.rank, "unit": soldier.unit, "mos": soldier.mos}
+        ai_result = score_assessment(body.notes, context)
+        _populate_ai_scores(a, ai_result)
+        _apply_skill_deltas(soldier, ai_result.get("skill_vector_delta", {}))
+        db.add(soldier)
+
+    db.add(a)
+    db.flush()  # get a.id before adding children
+
+    # Save individual T/P/U ratings
+    for r in active_ratings:
+        dr = DetailedRating(
+            assessment_id=a.id,
+            eval_type=body.eval_category.replace("_eval", ""),
+            task_group=r.get("task_group", ""),
+            task_name=r.get("task_name", body.steo_mission_name or ""),
+            subtask_number=r.get("subtask_number", 0),
+            subtask_description=r.get("subtask_description", ""),
+            rating=r.get("rating", "P").upper(),
+            rating_score=score_from_rating(r.get("rating", "P")),
+        )
+        db.add(dr)
+
+    db.commit()
+    db.refresh(a)
+    return {
+        **_assessment_dict(a),
+        "category_scores": cat_scores,
+        "rating_count": len(active_ratings),
+    }
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)

@@ -48,9 +48,41 @@ def get_session_factory():
 
 
 def init_db():
-    """Create all tables if they don't exist."""
+    """Create all tables if they don't exist, then apply any additive column migrations."""
     from backend.app.db import models  # noqa: F401 — registers all models
-    Base.metadata.create_all(bind=get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(bind=engine)
+    _migrate_add_columns(engine)
+
+
+def _migrate_add_columns(engine) -> None:
+    """Idempotently add new columns to existing tables (SQLite-safe ALTER TABLE)."""
+    new_cols = [
+        # (table, column, ddl_type)
+        ("assessments", "eval_category",      "VARCHAR(20)"),
+        ("assessments", "steo_mission_name",   "VARCHAR(255)"),
+        ("assessments", "ldr_planning",        "FLOAT"),
+        ("assessments", "ldr_atd",             "FLOAT"),
+        ("assessments", "ldr_time_mgmt",       "FLOAT"),
+        ("assessments", "ldr_decisiveness",    "FLOAT"),
+        ("assessments", "ldr_tactics",         "FLOAT"),
+        ("assessments", "ump_planning",        "FLOAT"),
+        ("assessments", "ump_atd",             "FLOAT"),
+        ("assessments", "ump_time_mgmt",       "FLOAT"),
+        ("assessments", "ump_decisiveness",    "FLOAT"),
+        ("assessments", "ump_tactics",         "FLOAT"),
+    ]
+    with engine.connect() as conn:
+        for table, col, col_type in new_cols:
+            try:
+                conn.execute(
+                    __import__("sqlalchemy").text(
+                        f"ALTER TABLE {table} ADD COLUMN {col} {col_type}"
+                    )
+                )
+                conn.commit()
+            except Exception:
+                pass  # column already exists — ignore
 
 
 def get_db():

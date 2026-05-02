@@ -135,14 +135,50 @@ class Assessment(Base):
 
     notes             = Column(Text)
 
+    # Structured evaluation type (set when using the tabbed eval form)
+    eval_category      = Column(String(20))       # leader_eval / unit_eval / steo_eval
+    steo_mission_name  = Column(String(255))
+
+    # Leader Evaluation category scores (1–5, T/P/U averaged)
+    ldr_planning     = Column(Float)
+    ldr_atd          = Column(Float)              # attention to detail
+    ldr_time_mgmt    = Column(Float)
+    ldr_decisiveness = Column(Float)
+    ldr_tactics      = Column(Float)
+
+    # Unit Mission Proficiency (UMP) category scores (1–5)
+    ump_planning     = Column(Float)
+    ump_atd          = Column(Float)
+    ump_time_mgmt    = Column(Float)
+    ump_decisiveness = Column(Float)
+    ump_tactics      = Column(Float)
+
     owner_user_id      = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     created_at         = Column(DateTime(timezone=True), nullable=False, default=_now)
     updated_at         = Column(DateTime(timezone=True), nullable=False, default=_now, onupdate=_now)
 
-    soldier  = relationship("Soldier", back_populates="assessments")
-    event    = relationship("TrainingEvent", back_populates="assessments")
-    evaluator = relationship("User", foreign_keys=[evaluator_id])
+    soldier          = relationship("Soldier", back_populates="assessments")
+    event            = relationship("TrainingEvent", back_populates="assessments")
+    evaluator        = relationship("User", foreign_keys=[evaluator_id])
+    detailed_ratings = relationship("DetailedRating", back_populates="assessment", cascade="all, delete-orphan")
+
+
+class DetailedRating(Base):
+    __tablename__ = "detailed_ratings"
+
+    id                = Column(Integer, primary_key=True, index=True)
+    assessment_id     = Column(Integer, ForeignKey("assessments.id", ondelete="CASCADE"), nullable=False)
+    eval_type         = Column(String(20))    # leader / unit / steo
+    task_group        = Column(String(100))   # Planning, Time Management, etc.
+    task_name         = Column(String(255))   # for STEO: mission name
+    subtask_number    = Column(Integer)
+    subtask_description = Column(Text)
+    rating            = Column(String(1))     # T / P / U
+    rating_score      = Column(Integer)       # 1 / 3 / 5
+    created_at        = Column(DateTime(timezone=True), nullable=False, default=_now)
+
+    assessment = relationship("Assessment", back_populates="detailed_ratings")
 
 
 # ---------------------------------------------------------------------------

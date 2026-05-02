@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from backend.app.core.config import get_settings
 from backend.app.db.database import init_db
+from backend.app.routes.analysis import router as analysis_router
 from backend.app.routes.auth import router as auth_router
 from backend.app.routes.assessments import router as assessments_router
 from backend.app.routes.battlespace import router as battlespace_router
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(assessments_router, prefix=prefix)
     app.include_router(missions_router,    prefix=prefix)
     app.include_router(battlespace_router, prefix=prefix)
+    app.include_router(analysis_router,    prefix=prefix)
 
     @app.exception_handler(Exception)
     async def _unhandled_exception(request: Request, exc: Exception):

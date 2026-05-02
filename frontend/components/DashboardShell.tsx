@@ -3,17 +3,20 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ReactNode } from "react";
 import {
-  Activity, Crosshair, Database, LayoutDashboard, LogOut,
-  Shield, Users,
+  Activity, BarChart2, Crosshair, Database, LayoutDashboard, LogOut,
+  Shield, Target, Users,
 } from "lucide-react";
 import { useAuth } from "./AuthContext";
 
 const NAV = [
-  { href: "/dashboard", label: "Dashboard",   icon: LayoutDashboard, phase: null },
-  { href: "/soldiers",  label: "Soldiers",     icon: Users,           phase: "01" },
-  { href: "/assess",    label: "Assess",        icon: Database,        phase: "01" },
-  { href: "/teams",     label: "Team Builder",  icon: Shield,          phase: "02" },
-  { href: "/battlespace", label: "Battlespace", icon: Crosshair,       phase: "03" },
+  { href: "/dashboard",          label: "Dashboard",         icon: LayoutDashboard, phase: null,  group: null },
+  { href: "/soldiers",           label: "Soldiers",          icon: Users,           phase: "01",  group: "data" },
+  { href: "/assess",             label: "Evaluate",          icon: Database,        phase: "01",  group: "data" },
+  { href: "/analysis/leader",    label: "Leader Analysis",   icon: Activity,        phase: "01",  group: "analysis" },
+  { href: "/analysis/unit",      label: "Unit Analysis",     icon: BarChart2,       phase: "01",  group: "analysis" },
+  { href: "/analysis/battalion", label: "Battalion Overview",icon: Target,          phase: "01",  group: "analysis" },
+  { href: "/teams",              label: "Team Builder",      icon: Shield,          phase: "02",  group: "ops" },
+  { href: "/battlespace",        label: "Battlespace",       icon: Crosshair,       phase: "03",  group: "ops" },
 ];
 
 const PHASE_COLORS: Record<string, string> = {
@@ -45,27 +48,33 @@ export default function DashboardShell({ children }: { children: ReactNode }) {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 px-2 py-4 space-y-0.5 overflow-y-auto">
-          {NAV.map(({ href, label, icon: Icon, phase }) => {
-            const active = pathname.startsWith(href);
+        <nav className="flex-1 px-2 py-4 overflow-y-auto">
+          {NAV.map(({ href, label, icon: Icon, phase, group }, idx) => {
+            const active = pathname === href || (href !== "/dashboard" && pathname.startsWith(href));
+            const prevGroup = idx > 0 ? NAV[idx - 1].group : null;
+            const showDivider = group !== null && group !== prevGroup && idx > 0;
             return (
-              <Link
-                key={href}
-                href={href}
-                className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
-                  active
-                    ? "bg-[#21262d] text-white"
-                    : "text-[#8b949e] hover:text-white hover:bg-[#21262d]"
-                }`}
-              >
-                <Icon size={16} />
-                <span className="flex-1">{label}</span>
-                {phase && (
-                  <span className={`text-[10px] font-bold ${PHASE_COLORS[phase] ?? ""}`}>
-                    P{phase}
-                  </span>
+              <div key={href}>
+                {showDivider && (
+                  <div className="mx-3 my-2 border-t border-[#21262d]" />
                 )}
-              </Link>
+                <Link
+                  href={href}
+                  className={`flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors ${
+                    active
+                      ? "bg-[#21262d] text-white"
+                      : "text-[#8b949e] hover:text-white hover:bg-[#21262d]"
+                  }`}
+                >
+                  <Icon size={16} />
+                  <span className="flex-1 leading-tight">{label}</span>
+                  {phase && (
+                    <span className={`text-[10px] font-bold ${PHASE_COLORS[phase] ?? ""}`}>
+                      P{phase}
+                    </span>
+                  )}
+                </Link>
+              </div>
             );
           })}
         </nav>

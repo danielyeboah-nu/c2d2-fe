@@ -61,8 +61,61 @@ export interface Assessment {
   score_stress_response?: number;
   score_tactical?: number;
   score_communication?: number;
+  // Structured eval fields
+  eval_category?: string;
+  steo_mission_name?: string;
+  ldr_planning?: number;
+  ldr_atd?: number;
+  ldr_time_mgmt?: number;
+  ldr_decisiveness?: number;
+  ldr_tactics?: number;
+  ump_planning?: number;
+  ump_atd?: number;
+  ump_time_mgmt?: number;
+  ump_decisiveness?: number;
+  ump_tactics?: number;
   notes?: string;
   created_at?: string;
+  updated_at?: string;
+}
+
+export interface LeaderAnalysis {
+  soldier: { id: number; rank: string; name: string; unit?: string; mos?: string };
+  eval_count: number;
+  leader_averages: Record<string, number>;
+  ump_averages: Record<string, number>;
+  ai_averages: Record<string, number>;
+  leader_trend: Record<string, string | number>[];
+  ump_trend: Record<string, string | number>[];
+  steo_summary: { mission: string; avg_score: number; proficiency: string; eval_count: number }[];
+  assessments: Record<string, unknown>[];
+}
+
+export interface UnitAnalysis {
+  unit: string;
+  soldier_count: number;
+  eval_count: number;
+  per_soldier: {
+    id: number; rank: string; name: string; eval_count: number;
+    leader_averages: Record<string, number>;
+    ump_averages: Record<string, number>;
+  }[];
+  unit_trend: Record<string, string | number>[];
+  steo_summary: { mission: string; avg_score: number; proficiency: string; eval_count: number }[];
+}
+
+export interface BattalionOverview {
+  total_soldiers: number;
+  total_evals: number;
+  battalion_leader_avg: Record<string, number>;
+  battalion_ump_avg: Record<string, number>;
+  units: {
+    unit: string;
+    soldier_count: number;
+    eval_count: number;
+    leader_averages: Record<string, number>;
+    ump_averages: Record<string, number>;
+  }[];
 }
 
 export interface Mission {
