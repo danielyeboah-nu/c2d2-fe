@@ -20,11 +20,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const stored = getStoredUser();
-    if (stored && getToken()) {
-      setUser(stored as unknown as User);
+    const token = getToken();
+    if (!token) {
+      setLoading(false);
+      return;
     }
-    setLoading(false);
+    api.get<User>("/api/v1/auth/me")
+      .then((me) => {
+        setStoredUser(me as unknown as Record<string, unknown>);
+        setUser(me);
+      })
+      .catch(() => {
+        clearToken();
+        setUser(null);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   async function login(email: string, password: string) {

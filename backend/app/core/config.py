@@ -18,7 +18,10 @@ class Settings:
     jwt_expire_hours: int = int(os.getenv("JWT_EXPIRE_HOURS", "168"))
 
     # CORS
-    cors_origins: str = os.getenv("CORS_ORIGINS", "http://localhost:3000")
+    cors_origins: str = os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001,http://127.0.0.1:3001",
+    )
 
     # AI — Anthropic (scoring + adversarial + OCR vision)
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")

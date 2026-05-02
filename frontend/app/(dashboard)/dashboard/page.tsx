@@ -13,16 +13,16 @@ export default function DashboardPage() {
   const [loading, setLoading]       = useState(true);
 
   useEffect(() => {
-    Promise.all([
+    Promise.allSettled([
       api.get<Soldier[]>("/api/v1/soldiers"),
       api.get<Assessment[]>("/api/v1/assessments"),
       api.get<Mission[]>("/api/v1/missions"),
       api.get<BattlespaceSession[]>("/api/v1/battlespace"),
     ]).then(([s, a, m, bs]) => {
-      setSoldiers(s);
-      setAssessments(a);
-      setMissions(m);
-      setSessions(bs);
+      if (s.status === "fulfilled") setSoldiers(s.value);
+      if (a.status === "fulfilled") setAssessments(a.value);
+      if (m.status === "fulfilled") setMissions(m.value);
+      if (bs.status === "fulfilled") setSessions(bs.value);
     }).finally(() => setLoading(false));
   }, []);
 
