@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  # Local PostgreSQL (optional upgrade from SQLite)
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: c2d2
+      POSTGRES_PASSWORD: c2d2local
+      POSTGRES_DB: c2d2
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U c2d2"]
+      interval: 5s
+      retries: 5
+
+  # Backend only (for local dev with Next.js running separately)
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      python -m uvicorn backend.app.main:app
+        --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://c2d2:c2d2local@postgres:5432/c2d2
+      JWT_SECRET: local-dev-secret
+      DEBUG: "true"
+      CORS_ORIGINS: http://localhost:3000
+    env_file:
+      - .env
+    volumes:
+      - ./backend:/app/backend
+      - ./data_local:/app/data_local
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
