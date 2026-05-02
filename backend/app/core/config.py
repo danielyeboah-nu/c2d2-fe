@@ -32,12 +32,6 @@ class Settings:
     # Claude model
     claude_model: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
 
-    # TAK Server — CoT subscriber (optional; leave host empty to disable)
-    tak_server_host: str  = os.getenv("TAK_SERVER_HOST", "")
-    tak_server_port: int  = int(os.getenv("TAK_SERVER_PORT", "8087"))  # 8087 = TCP, 8089 = TLS
-    tak_server_tls:  bool = os.getenv("TAK_SERVER_TLS", "false").lower() in ("1", "true", "yes")
-    tak_server_cert: str  = os.getenv("TAK_SERVER_CERT", "")   # path to client cert (TLS only)
-
     # Azure Blob Storage (optional, for photo/audio uploads)
     photos_backend: str = os.getenv("PHOTOS_BACKEND", "local")
     azure_blob_connection_string: str = os.getenv("AZURE_BLOB_CONNECTION_STRING", "")

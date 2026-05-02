@@ -71,9 +71,7 @@ def _migrate_add_columns(engine) -> None:
         ("assessments", "ump_time_mgmt",       "FLOAT"),
         ("assessments", "ump_decisiveness",    "FLOAT"),
         ("assessments", "ump_tactics",         "FLOAT"),
-        # ATAK TAK UID on soldiers
-        ("soldiers", "tak_uid", "VARCHAR(100)"),
-        # Mission AO / ATAK context fields
+        # Mission AO / weather context fields
         ("missions", "ao_grid_center",      "VARCHAR(20)"),
         ("missions", "ao_radius_km",        "FLOAT"),
         ("missions", "weather_snapshot_id", "INTEGER"),

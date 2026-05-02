@@ -74,8 +74,6 @@ class Soldier(Base):
     skill_physical         = Column(Float, default=0.5)
     skill_technical        = Column(Float, default=0.5)
 
-    tak_uid          = Column(String(100), unique=True, nullable=True, index=True)  # ATAK device UID for CoT matching
-
     decision_style   = Column(String(50), default="methodical")  # aggressive/methodical/adaptive
     leadership_traits = Column(JSON, default=list)               # ["decisive", "assertive"…]
     personality_profile = Column(JSON, default=dict)
