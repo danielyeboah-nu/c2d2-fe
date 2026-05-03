@@ -3,8 +3,8 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { ReactNode } from "react";
 import {
-  Activity, BarChart2, Crosshair, Database, LayoutDashboard, LogOut,
-  Shield, Target, Users,
+  Activity, BarChart2, Bot, Brain, CalendarDays, Crosshair, Database,
+  LayoutDashboard, LogOut, Network, Shield, Target, Users,
 } from "lucide-react";
 import { useAuth } from "./AuthContext";
 
@@ -16,13 +16,20 @@ const NAV = [
   { href: "/analysis/unit",      label: "Unit Analysis",     icon: BarChart2,       phase: "01",  group: "analysis" },
   { href: "/analysis/battalion", label: "Battalion Overview",icon: Target,          phase: "01",  group: "analysis" },
   { href: "/teams",              label: "Team Builder",      icon: Shield,          phase: "02",  group: "ops" },
+  { href: "/training",           label: "Training Schedule", icon: CalendarDays,    phase: "02",  group: "ops" },
   { href: "/battlespace",        label: "Battlespace",       icon: Crosshair,       phase: "03",  group: "ops" },
+  { href: "/ranger-training",    label: "Ranger AI",         icon: Bot,             phase: "S1",  group: "agents" },
+  { href: "/cognitive-adapt",    label: "Cognitive Adapt",   icon: Brain,           phase: "S2",  group: "agents" },
+  { href: "/ops-gateway",        label: "Ops Gateway",       icon: Network,         phase: "S3",  group: "agents" },
 ];
 
 const PHASE_COLORS: Record<string, string> = {
   "01": "text-[#3fb950]",
   "02": "text-[#f59e0b]",
   "03": "text-[#f85149]",
+  "S1": "text-[#58a6ff]",
+  "S2": "text-[#a371f7]",
+  "S3": "text-[#f59e0b]",
 };
 
 export default function DashboardShell({ children }: { children: ReactNode }) {

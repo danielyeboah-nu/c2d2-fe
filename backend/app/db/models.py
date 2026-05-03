@@ -314,6 +314,7 @@ class BattlespaceSession(Base):
     sensor_tracks    = relationship("SensorTrack",    back_populates="session", cascade="all, delete-orphan")
     risk_vectors     = relationship("RiskVector",     back_populates="session", cascade="all, delete-orphan")
     simulations      = relationship("AdversarialSim", back_populates="session", cascade="all, delete-orphan")
+    sim_jobs         = relationship("SimulationJob",  back_populates="session", cascade="all, delete-orphan")
 
 
 class SensorTrack(Base):
@@ -364,3 +365,54 @@ class AdversarialSim(Base):
     created_at             = Column(DateTime(timezone=True), nullable=False, default=_now)
 
     session = relationship("BattlespaceSession", back_populates="simulations")
+
+
+class SimulationJob(Base):
+    """Background simulation job — tracks status from pending → running → completed/failed."""
+    __tablename__ = "simulation_jobs"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    session_id    = Column(Integer, ForeignKey("battlespace_sessions.id", ondelete="CASCADE"), nullable=False)
+    sim_round     = Column(Integer, default=1)
+    status        = Column(String(20), default="pending")  # pending | running | completed | failed
+    result        = Column(JSON)
+    error         = Column(Text)
+    ai_model_used = Column(String(100))
+    created_at    = Column(DateTime(timezone=True), nullable=False, default=_now)
+    completed_at  = Column(DateTime(timezone=True))
+
+    session = relationship("BattlespaceSession", back_populates="sim_jobs")
+
+
+# ---------------------------------------------------------------------------
+# Phase 02 — Training Schedule (Platoon rotation)
+# ---------------------------------------------------------------------------
+
+class TrainingSchedule(Base):
+    __tablename__ = "training_schedules"
+
+    id                 = Column(Integer, primary_key=True, index=True)
+    name               = Column(String(255), nullable=False)
+    platoon_name       = Column(String(100))
+    num_days           = Column(Integer, default=10)
+    start_date         = Column(String(20))   # ISO date string e.g. "2026-05-05"
+    created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at         = Column(DateTime(timezone=True), nullable=False, default=_now)
+
+    slots = relationship("TrainingSlot", back_populates="schedule",
+                         cascade="all, delete-orphan", order_by="TrainingSlot.id")
+
+
+class TrainingSlot(Base):
+    """One leadership assignment: day × mission × role → soldier."""
+    __tablename__ = "training_slots"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    schedule_id = Column(Integer, ForeignKey("training_schedules.id", ondelete="CASCADE"), nullable=False)
+    day_number  = Column(Integer, nullable=False)           # 1 – num_days
+    mission_type = Column(String(20), nullable=False)       # planning / attack / defense
+    role        = Column(String(10), nullable=False)        # PL / PSG / SL1 / SL2 / SL3 / WSL
+    soldier_id  = Column(Integer, ForeignKey("soldiers.id", ondelete="SET NULL"), nullable=True)
+
+    schedule = relationship("TrainingSchedule", back_populates="slots")
+    soldier  = relationship("Soldier")

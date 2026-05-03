@@ -59,6 +59,7 @@ def _migrate_add_columns(engine) -> None:
     """Idempotently add new columns to existing tables (SQLite-safe ALTER TABLE)."""
     new_cols = [
         # (table, column, ddl_type)
+        ("users",       "is_active",           "BOOLEAN DEFAULT 1"),
         ("assessments", "eval_category",      "VARCHAR(20)"),
         ("assessments", "steo_mission_name",   "VARCHAR(255)"),
         ("assessments", "ldr_planning",        "FLOAT"),

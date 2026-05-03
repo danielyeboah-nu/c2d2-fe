@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import logging
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Any
 
-from backend.app.db.database import get_db
-from backend.app.db.models import AdversarialSim, BattlespaceSession, RiskVector, SensorTrack, User
+from backend.app.db.database import get_db, get_session_factory
+from backend.app.db.models import (
+    AdversarialSim, BattlespaceSession, Mission, RiskVector, SimulationJob,
+    Soldier, SoldierReadiness, SensorTrack, TeamComposition, User, WeatherSnapshot,
+)
 from backend.app.deps import get_current_user
 from backend.app.services.adversarial_ai import run_adversarial_simulation
 
 router = APIRouter(prefix="/battlespace", tags=["Battlespace — Phase 03"])
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +88,69 @@ def _session_dict(s: BattlespaceSession, include_tracks: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Background task
+# ---------------------------------------------------------------------------
+
+def _run_sim_background(job_id: int, session_dict: dict) -> None:
+    """Executes the adversarial simulation in a background thread."""
+    SessionLocal = get_session_factory()
+    db = SessionLocal()
+    try:
+        job = db.query(SimulationJob).filter(SimulationJob.id == job_id).first()
+        if not job:
+            return
+
+        job.status = "running"
+        db.commit()
+
+        result = run_adversarial_simulation(session_dict)
+
+        sim = AdversarialSim(
+            session_id=job.session_id,
+            simulation_round=job.sim_round,
+            ai_model_used=result.get("ai_model_used", "unknown"),
+            adversary_moves=result.get("adversary_moves", []),
+            risk_vectors_generated=result.get("risk_vectors", []),
+            recommendations=result.get("recommendations", []),
+            raw_ai_response=str(result),
+        )
+        db.add(sim)
+
+        for rv_data in result.get("risk_vectors", []):
+            rv = RiskVector(
+                session_id=job.session_id,
+                risk_type=rv_data.get("risk_type", "unknown"),
+                severity=rv_data.get("severity", "medium"),
+                description=rv_data.get("description", ""),
+                affected_units=rv_data.get("affected_units", []),
+                recommended_action=rv_data.get("recommended_action", ""),
+                confidence_score=rv_data.get("confidence_score", 0.0),
+                ai_generated=True,
+            )
+            db.add(rv)
+
+        job.status = "completed"
+        job.result = result
+        job.ai_model_used = result.get("ai_model_used")
+        job.completed_at = datetime.now(timezone.utc)
+        db.commit()
+
+    except Exception as exc:
+        logger.error("Simulation job %d failed: %s", job_id, exc)
+        try:
+            db.rollback()
+            job = db.query(SimulationJob).filter(SimulationJob.id == job_id).first()
+            if job:
+                job.status = "failed"
+                job.error = str(exc)
+                db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
@@ -103,6 +174,29 @@ def create_session(
     db.commit()
     db.refresh(s)
     return _session_dict(s)
+
+
+# NOTE: /jobs/{job_id} must be defined before /{session_id} to avoid param collision
+@router.get("/jobs/{job_id}")
+def get_sim_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    job = db.query(SimulationJob).filter(SimulationJob.id == job_id).first()
+    if not job:
+        raise HTTPException(404, detail="Job not found")
+    return {
+        "job_id": job.id,
+        "session_id": job.session_id,
+        "sim_round": job.sim_round,
+        "status": job.status,
+        "result": job.result,
+        "error": job.error,
+        "ai_model_used": job.ai_model_used,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+    }
 
 
 @router.get("/{session_id}")
@@ -158,12 +252,13 @@ def add_sensor_track(
 @router.post("/{session_id}/simulate-adversary")
 def simulate_adversary(
     session_id: int,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Phase 03 — Run the adversarial AI simulation.
-    Generates adversary moves, risk vectors, and recommended actions.
+    Phase 03 — Queue an adversarial AI simulation as a background job.
+    Returns a job_id immediately; poll GET /jobs/{job_id} for status and results.
     """
     s = db.query(BattlespaceSession).filter(BattlespaceSession.id == session_id).first()
     if not s:
@@ -171,61 +266,118 @@ def simulate_adversary(
     if s.status == "closed":
         raise HTTPException(400, detail="Session is closed")
 
-    # Determine next simulation round
+    # Block if a job is already running for this session
+    active_job = (
+        db.query(SimulationJob)
+        .filter(
+            SimulationJob.session_id == session_id,
+            SimulationJob.status.in_(["pending", "running"]),
+        )
+        .first()
+    )
+    if active_job:
+        return {"job_id": active_job.id, "status": active_job.status, "session_id": session_id}
+
     round_num = len(s.simulations) + 1
 
-    # Build context dict including live sensor tracks
+    # Live sensor tracks
     tracks = [
         {"track_type": t.track_type, "callsign": t.callsign, "grid": t.grid, "status": t.status}
         for t in s.sensor_tracks
     ]
 
+    # Enrich with squad composition + mission context when session is linked to a mission
+    squad_members: list[dict] = []
+    mission_context: dict | None = None
+
+    if s.mission_id:
+        mission = db.query(Mission).filter(Mission.id == s.mission_id).first()
+        if mission:
+            mission_context = {
+                "mission_name":    mission.mission_name,
+                "mission_type":    mission.mission_type,
+                "threat_level":    mission.threat_level,
+                "terrain_type":    mission.terrain_type,
+                "duration_hours":  mission.duration_hours,
+                "ao_grid_center":  mission.ao_grid_center,
+            }
+
+            if mission.ao_grid_center:
+                snap = (
+                    db.query(WeatherSnapshot)
+                    .filter(WeatherSnapshot.mgrs_grid == mission.ao_grid_center)
+                    .order_by(WeatherSnapshot.recorded_at.desc())
+                    .first()
+                )
+                if snap:
+                    mission_context["weather"] = {
+                        "temperature_c":  snap.temperature_c,
+                        "humidity_pct":   snap.humidity_pct,
+                        "wind_speed_kmh": snap.wind_speed_kmh,
+                        "visibility_km":  snap.visibility_km,
+                        "wbgt":           snap.wbgt,
+                        "precipitation":  snap.precipitation,
+                    }
+
+            comp: TeamComposition | None = None
+            if mission.selected_composition_id:
+                comp = db.query(TeamComposition).filter(
+                    TeamComposition.id == mission.selected_composition_id
+                ).first()
+            if comp is None and mission.compositions:
+                comp = sorted(mission.compositions, key=lambda c: c.composition_rank)[0]
+
+            if comp:
+                readiness_by_soldier: dict[int, SoldierReadiness] = {
+                    r.soldier_id: r
+                    for r in db.query(SoldierReadiness).all()
+                }
+                for member in comp.members:
+                    sol: Soldier | None = member.soldier
+                    if not sol:
+                        continue
+                    rd = readiness_by_soldier.get(sol.id)
+                    squad_members.append({
+                        "name":          f"{sol.rank} {sol.name}",
+                        "role":          member.role or "rifleman",
+                        "fit_score":     round(member.fit_score, 3),
+                        "fit_notes":     member.fit_notes,
+                        "skills": {
+                            "leadership":      round(sol.skill_leadership or 0.5, 2),
+                            "decision_making": round(sol.skill_decision_making or 0.5, 2),
+                            "stress_tolerance":round(sol.skill_stress_tolerance or 0.5, 2),
+                            "tactical":        round(sol.skill_tactical or 0.5, 2),
+                            "communication":   round(sol.skill_communication or 0.5, 2),
+                            "teamwork":        round(sol.skill_teamwork or 0.5, 2),
+                            "adaptability":    round(sol.skill_adaptability or 0.5, 2),
+                            "physical":        round(sol.skill_physical or 0.5, 2),
+                            "technical":       round(sol.skill_technical or 0.5, 2),
+                        },
+                        "fatigue_index":   round(rd.fatigue_index, 3) if rd else None,
+                        "injury_status":   rd.injury_status if rd else "unknown",
+                        "sleep_hours_24h": rd.sleep_hours_24h if rd else None,
+                        "sleep_hours_48h": rd.sleep_hours_48h if rd else None,
+                    })
+
     session_dict = {
-        "session_name": s.session_name,
-        "scenario_description": s.scenario_description,
-        "friendly_units": s.friendly_units or [],
-        "known_enemy": s.known_enemy or [],
-        "intel_reports": s.intel_reports or [],
-        "sensor_tracks": tracks,
+        "session_name":        s.session_name,
+        "scenario_description":s.scenario_description,
+        "friendly_units":      s.friendly_units or [],
+        "known_enemy":         s.known_enemy or [],
+        "intel_reports":       s.intel_reports or [],
+        "sensor_tracks":       tracks,
+        "squad_members":       squad_members,
+        "mission_context":     mission_context,
     }
 
-    sim_result = run_adversarial_simulation(session_dict)
-
-    # Persist simulation record
-    sim = AdversarialSim(
-        session_id=session_id,
-        simulation_round=round_num,
-        ai_model_used=sim_result.get("ai_model_used", "unknown"),
-        adversary_moves=sim_result.get("adversary_moves", []),
-        risk_vectors_generated=sim_result.get("risk_vectors", []),
-        recommendations=sim_result.get("recommendations", []),
-        raw_ai_response=str(sim_result),
-    )
-    db.add(sim)
-
-    # Persist risk vectors
-    for rv_data in sim_result.get("risk_vectors", []):
-        rv = RiskVector(
-            session_id=session_id,
-            risk_type=rv_data.get("risk_type", "unknown"),
-            severity=rv_data.get("severity", "medium"),
-            description=rv_data.get("description", ""),
-            affected_units=rv_data.get("affected_units", []),
-            recommended_action=rv_data.get("recommended_action", ""),
-            confidence_score=rv_data.get("confidence_score", 0.0),
-            ai_generated=True,
-        )
-        db.add(rv)
-
+    job = SimulationJob(session_id=session_id, sim_round=round_num, status="pending")
+    db.add(job)
     db.commit()
-    return {
-        "session_id": session_id,
-        "simulation_round": round_num,
-        "situation_summary": sim_result.get("situation_summary", ""),
-        "adversary_moves": sim_result.get("adversary_moves", []),
-        "risk_vectors": sim_result.get("risk_vectors", []),
-        "recommendations": sim_result.get("recommendations", []),
-    }
+    db.refresh(job)
+
+    background_tasks.add_task(_run_sim_background, job.id, session_dict)
+
+    return {"job_id": job.id, "status": "pending", "session_id": session_id}
 
 
 @router.get("/{session_id}/risk-vectors")

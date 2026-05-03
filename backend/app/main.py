@@ -16,6 +16,7 @@ from backend.app.routes.battlespace import router as battlespace_router
 from backend.app.routes.events import router as events_router
 from backend.app.routes.missions import router as missions_router
 from backend.app.routes.soldiers import router as soldiers_router
+from backend.app.routes.training import router as training_router
 from backend.app.routes.weather import router as weather_router
 from backend.app.services.auth_service import hash_password
 
@@ -84,6 +85,7 @@ def create_app() -> FastAPI:
     app.include_router(missions_router,    prefix=prefix)
     app.include_router(battlespace_router, prefix=prefix)
     app.include_router(weather_router,     prefix=prefix)
+    app.include_router(training_router,    prefix=prefix)
     app.include_router(analysis_router,    prefix=prefix)
 
     @app.exception_handler(Exception)

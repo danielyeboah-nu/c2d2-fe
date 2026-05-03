@@ -2,6 +2,19 @@ from __future__ import annotations
 
 import os
 from functools import lru_cache
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env files: first the backend-local one, then the project root.
+# Variables already set in the environment take precedence (override=False).
+_here = Path(__file__).resolve()
+for _candidate in [
+    _here.parents[3] / "backend" / ".env",   # <project>/backend/.env
+    _here.parents[3] / ".env",               # <project>/.env
+]:
+    if _candidate.exists():
+        load_dotenv(_candidate, override=False)
 
 
 class Settings:

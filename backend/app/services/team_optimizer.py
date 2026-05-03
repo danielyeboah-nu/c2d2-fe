@@ -219,18 +219,7 @@ def optimize_team(
         selected = pool[:team_size]
         avg_fit  = sum(s[0] for s in selected) / len(selected)
 
-        members = [
-            {
-                "soldier_id":     s[3]["id"],
-                "name":           f"{s[3].get('rank', '')} {s[3].get('name', '')}".strip(),
-                "unit":           s[3].get("unit", ""),
-                "fit_score":      s[0],
-                "base_fit_score": s[1],
-                "fit_notes":      "; ".join(s[2]) if s[2] else None,
-                "role":           _suggest_role(s[3], opt_idx),
-            }
-            for s in selected
-        ]
+        members = _assign_training_roles(selected)
 
         rationale = _generate_rationale(mission, members, avg_fit, weather)
         compositions.append(
@@ -246,15 +235,66 @@ def optimize_team(
     return compositions
 
 
-def _suggest_role(soldier: dict, option_index: int) -> str:
-    leader_type = soldier.get("leader_type", "")
-    if "squad_leader" in leader_type or soldier.get("skill_leadership", 0) > 0.75:
-        return "team_lead"
-    if "medic" in leader_type or "68W" in (soldier.get("mos") or ""):
-        return "medic"
-    if "comms" in leader_type or "25" in (soldier.get("mos") or ""):
-        return "comms"
-    return "rifleman"
+TRAINING_ROLES = ["PL", "PSG", "SL1", "SL2", "SL3", "WSL"]
+
+_ROLE_FIT_WEIGHTS: dict[str, dict[str, float]] = {
+    "PL":  {"skill_leadership": 0.40, "skill_decision_making": 0.25,
+            "skill_stress_tolerance": 0.20, "skill_communication": 0.15},
+    "PSG": {"skill_leadership": 0.25, "skill_decision_making": 0.30,
+            "skill_stress_tolerance": 0.25, "skill_tactical": 0.20},
+    "SL1": {"skill_tactical": 0.35, "skill_leadership": 0.30,
+            "skill_communication": 0.20, "skill_teamwork": 0.15},
+    "SL2": {"skill_tactical": 0.35, "skill_leadership": 0.30,
+            "skill_communication": 0.20, "skill_adaptability": 0.15},
+    "SL3": {"skill_tactical": 0.35, "skill_leadership": 0.30,
+            "skill_communication": 0.20, "skill_stress_tolerance": 0.15},
+    "WSL": {"skill_technical": 0.40, "skill_tactical": 0.30,
+            "skill_leadership": 0.20, "skill_physical": 0.10},
+}
+
+
+def _role_fit_score(soldier: dict, role: str) -> float:
+    weights = _ROLE_FIT_WEIGHTS.get(role, {"skill_leadership": 1.0})
+    return sum(soldier.get(sk, 0.5) * w for sk, w in weights.items())
+
+
+def _assign_training_roles(
+    scored: list[tuple[float, float, list[str], dict]]
+) -> list[dict]:
+    """
+    Greedy role assignment: for each of PL→WSL pick the best remaining soldier.
+    Surplus soldiers beyond the 6 leadership roles get 'rifleman'.
+    """
+    pool = list(scored)
+    result: list[dict] = []
+
+    for role in TRAINING_ROLES:
+        if not pool:
+            break
+        best_idx = max(range(len(pool)), key=lambda i: _role_fit_score(pool[i][3], role))
+        s = pool.pop(best_idx)
+        result.append({
+            "soldier_id":     s[3]["id"],
+            "name":           f"{s[3].get('rank', '')} {s[3].get('name', '')}".strip(),
+            "unit":           s[3].get("unit", ""),
+            "fit_score":      s[0],
+            "base_fit_score": s[1],
+            "fit_notes":      "; ".join(s[2]) if s[2] else None,
+            "role":           role,
+        })
+
+    for s in pool:
+        result.append({
+            "soldier_id":     s[3]["id"],
+            "name":           f"{s[3].get('rank', '')} {s[3].get('name', '')}".strip(),
+            "unit":           s[3].get("unit", ""),
+            "fit_score":      s[0],
+            "base_fit_score": s[1],
+            "fit_notes":      "; ".join(s[2]) if s[2] else None,
+            "role":           "rifleman",
+        })
+
+    return result
 
 
 def _generate_rationale(

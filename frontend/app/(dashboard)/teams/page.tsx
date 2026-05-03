@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
-import { CheckCircle, ChevronDown, ChevronUp, Cloud, Plus, Thermometer, Wind, Zap } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { CheckCircle, ChevronDown, ChevronUp, Cloud, Plus, Send, Thermometer, Wind, Zap } from "lucide-react";
 import { api } from "@/lib/api";
 import type { Mission, TeamComposition, WeatherSnapshot } from "@/types";
 
@@ -82,12 +83,14 @@ function WeatherCard({ grid }: { grid: string }) {
 }
 
 export default function TeamsPage() {
+  const router = useRouter();
   const [missions, setMissions]     = useState<Mission[]>([]);
   const [loading, setLoading]       = useState(true);
   const [showNew, setShowNew]       = useState(false);
   const [optimizing, setOptimizing] = useState<number | null>(null);
   const [expanded, setExpanded]     = useState<number | null>(null);
   const [selecting, setSelecting]   = useState<number | null>(null);
+  const [sendingId, setSendingId]   = useState<number | null>(null);
   const [error, setError]           = useState("");
 
   const [form, setForm] = useState({
@@ -149,6 +152,42 @@ export default function TeamsPage() {
       setError(err instanceof Error ? err.message : "Select failed");
     } finally {
       setSelecting(null);
+    }
+  }
+
+  async function handleSendToBattlespace(mission: Mission, comp: TeamComposition) {
+    setSendingId(comp.id);
+    setError("");
+    try {
+      // Auto-select this composition if none is chosen yet
+      if (!mission.selected_composition_id) {
+        await api.post(`/api/v1/missions/${mission.id}/select-team/${comp.id}`, {});
+      }
+
+      // Build friendly units from the 6 leadership roles
+      const leaders = comp.members.filter(m =>
+        ["PL","PSG","SL1","SL2","SL3","WSL"].includes(m.role)
+      );
+      const friendly = leaders.map(m => ({
+        callsign: `${m.role} — ${m.name}`,
+        grid: "",
+        status: "available",
+      }));
+
+      const session = await api.post<{ id: number }>("/api/v1/battlespace", {
+        session_name:         `${mission.mission_name} — War Game`,
+        scenario_description: `${mission.mission_type} mission · ${mission.threat_level} threat · ${mission.terrain_type} terrain${mission.description ? `. ${mission.description}` : ""}`,
+        mission_id:           mission.id,
+        friendly_units:       friendly,
+        known_enemy:          [],
+        intel_reports:        [],
+      });
+
+      sessionStorage.setItem("battlespace_open", String(session.id));
+      router.push("/battlespace");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to send to Battlespace");
+      setSendingId(null);
     }
   }
 
@@ -294,15 +333,25 @@ export default function TeamsPage() {
                             </span>
                           )}
                         </div>
-                        {!comp.is_selected && !mission.selected_composition_id && (
+                        <div className="flex items-center gap-2">
+                          {!comp.is_selected && !mission.selected_composition_id && (
+                            <button
+                              onClick={() => handleSelect(mission.id, comp.id)}
+                              disabled={selecting === comp.id}
+                              className="text-xs px-3 py-1.5 bg-[#3fb950] hover:bg-green-600 text-black font-semibold rounded-md disabled:opacity-50"
+                            >
+                              {selecting === comp.id ? "Selecting…" : "Select This Team"}
+                            </button>
+                          )}
                           <button
-                            onClick={() => handleSelect(mission.id, comp.id)}
-                            disabled={selecting === comp.id}
-                            className="text-xs px-3 py-1.5 bg-[#3fb950] hover:bg-green-600 text-black font-semibold rounded-md disabled:opacity-50"
+                            onClick={() => handleSendToBattlespace(mission, comp)}
+                            disabled={sendingId === comp.id}
+                            className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-[#f85149] hover:bg-red-600 text-white font-semibold rounded-md disabled:opacity-50 transition-colors"
                           >
-                            {selecting === comp.id ? "Selecting…" : "Select This Team"}
+                            <Send size={11} />
+                            {sendingId === comp.id ? "Sending…" : "→ Battlespace"}
                           </button>
-                        )}
+                        </div>
                       </div>
 
                       <div className="mb-3">
@@ -317,30 +366,29 @@ export default function TeamsPage() {
                       </p>
 
                       <div className="grid grid-cols-2 gap-2">
-                        {comp.members.map(m => (
-                          <div key={m.id} className="bg-[#0d1117] rounded px-3 py-2">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <span className="text-xs text-white">{m.name}</span>
-                                <span className="ml-2 text-[10px] text-[#8b949e] capitalize">{m.role}</span>
-                              </div>
-                              <div className="text-right">
-                                <span className={`text-[10px] font-bold ${
+                        {comp.members.map(m => {
+                          const isLeadRole = ["PL","PSG","SL1","SL2","SL3","WSL"].includes(m.role);
+                          const isCommand  = m.role === "PL" || m.role === "PSG";
+                          return (
+                            <div key={m.id} className={`rounded px-3 py-2 ${isLeadRole ? "bg-[#161b22] border border-[#30363d]" : "bg-[#0d1117]"}`}>
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-[10px] font-black shrink-0 px-1.5 py-0.5 rounded ${
+                                  isCommand   ? "bg-[#f59e0b]/20 text-[#f59e0b]" :
+                                  isLeadRole  ? "bg-[#58a6ff]/10 text-[#58a6ff]" :
+                                               "bg-[#21262d] text-[#6e7681]"
+                                }`}>{m.role}</span>
+                                <span className="text-xs text-white truncate flex-1">{m.name}</span>
+                                <span className={`text-[10px] font-bold shrink-0 ${
                                   Math.round(m.fit_score * 100) >= 75 ? "text-[#3fb950]" :
                                   Math.round(m.fit_score * 100) >= 55 ? "text-[#f59e0b]" : "text-[#f85149]"
                                 }`}>{Math.round(m.fit_score * 100)}%</span>
-                                {m.base_fit_score != null && m.base_fit_score !== m.fit_score && (
-                                  <span className="ml-1 text-[9px] text-[#6e7681]">
-                                    (base {Math.round(m.base_fit_score * 100)}%)
-                                  </span>
-                                )}
                               </div>
+                              {m.fit_notes && (
+                                <p className="text-[9px] text-[#f59e0b] mt-1 leading-tight">{m.fit_notes}</p>
+                              )}
                             </div>
-                            {m.fit_notes && (
-                              <p className="text-[9px] text-[#f59e0b] mt-1 leading-tight">{m.fit_notes}</p>
-                            )}
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </div>
                   ))}

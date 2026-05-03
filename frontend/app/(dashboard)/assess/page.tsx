@@ -1,7 +1,8 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, CheckCircle, ChevronDown, ChevronRight, FileText, Mic, Upload } from "lucide-react";
-import { api } from "@/lib/api";
+import { api, OfflineError } from "@/lib/api";
+import { AtakDevicePanel, type GpsCoords } from "@/components/AtakDevicePanel";
 import type { Assessment, Soldier, TrainingEvent } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -52,13 +53,16 @@ export default function AssessPage() {
   const [file, setFile]     = useState<File | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
+  // ATAK context
+  const [gps, setGps] = useState<GpsCoords | null>(null);
+
   // Reference rubric data
   const [leaderRef, setLeaderRef] = useState<TaskGroup[]>([]);
   const [unitRef, setUnitRef]     = useState<TaskGroup[]>([]);
   const [steoRef, setSteoRef]     = useState<SteoMission[]>([]);
   const [steoMission, setSteoMission] = useState("");
 
-  // T/P/U ratings keyed by `${evalType}_${taskGroup}_${subtaskNumber}`
+  // T/P/U ratings keyed by `${taskGroup}__${subtaskNumber}`
   const [ratings, setRatings] = useState<Record<string, Rating>>({});
 
   // Collapsed state per task group
@@ -68,6 +72,7 @@ export default function AssessPage() {
   const [result, setResult]     = useState<Assessment | null>(null);
   const [catScores, setCatScores] = useState<Record<string, number> | null>(null);
   const [error, setError]       = useState("");
+  const [queued, setQueued]     = useState(false);
 
   // Load soldiers, events, reference data
   useEffect(() => {
@@ -84,7 +89,16 @@ export default function AssessPage() {
       setUnitRef(ur);
       setSteoRef(sr);
       if (sr.length) setSteoMission(sr[0].mission);
-    });
+    }).catch(() => {});
+  }, []);
+
+  // ATAK panel callbacks
+  const handleAtakLink = useCallback((id: string) => {
+    if (id) setSoldierIdStr(id);
+  }, []);
+
+  const handleGps = useCallback((coords: GpsCoords | null) => {
+    setGps(coords);
   }, []);
 
   function setRating(key: string, r: Rating) {
@@ -139,12 +153,20 @@ export default function AssessPage() {
     return total ? Math.round((rated / total) * 100) : 0;
   }
 
-  async function handleSubmit(e: React.FormEvent) {
+  // Build GPS prefix for notes — mirrors what the ATAK plugin attaches to CoT messages
+  function gpsPrefix(): string {
+    if (!gps) return "";
+    return `[GPS ${gps.lat.toFixed(5)},${gps.lon.toFixed(5)} ±${gps.accuracy}m]\n`;
+  }
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    setError(""); setLoading(true); setResult(null); setCatScores(null);
+    setError(""); setLoading(true); setResult(null); setCatScores(null); setQueued(false);
 
     const soldierId = parseInt(soldierIdStr);
     if (!soldierId) { setError("Select a soldier"); setLoading(false); return; }
+
+    const notesWithGps = gpsPrefix() + notes;
 
     try {
       if (captureMode === "structured") {
@@ -156,7 +178,7 @@ export default function AssessPage() {
           leader_ratings: evalCategory === "leader_eval" ? buildRatingsPayload(leaderRef, "Leader Eval") : [],
           unit_ratings:   evalCategory === "unit_eval"   ? buildRatingsPayload(unitRef,   "Unit Eval")   : [],
           steo_ratings:   evalCategory === "steo_eval"   ? buildSteoPayload()                             : [],
-          notes,
+          notes: notesWithGps,
           run_ai_scoring: !!notes.trim(),
         };
         const res = await api.post<Assessment & { category_scores: Record<string, number> }>(
@@ -171,6 +193,7 @@ export default function AssessPage() {
         if (eventIdStr) form.append("event_id", eventIdStr);
         form.append("assessment_type", "field_eval");
         form.append("file", file);
+        if (notesWithGps.trim()) form.append("notes", notesWithGps);
         const endpoint = captureMode === "ocr"
           ? "/api/v1/assessments/capture/ocr"
           : "/api/v1/assessments/capture/stt";
@@ -178,7 +201,11 @@ export default function AssessPage() {
         setResult(res);
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Submission failed");
+      if (err instanceof OfflineError) {
+        setQueued(true);
+      } else {
+        setError(err instanceof Error ? err.message : "Submission failed");
+      }
     } finally {
       setLoading(false);
     }
@@ -252,14 +279,17 @@ export default function AssessPage() {
     : 100;
 
   return (
-    <div className="p-6 space-y-6 max-w-4xl">
+    <div className="p-4 sm:p-6 space-y-5 max-w-4xl">
       <div>
         <h1 className="text-xl font-black text-white">New Evaluation</h1>
         <p className="text-[#8b949e] text-xs mt-0.5">Phase 01 — Data Capture · AI Scoring</p>
       </div>
 
+      {/* ATAK context panel — GPS + device link */}
+      <AtakDevicePanel onLink={handleAtakLink} onGps={handleGps} />
+
       {/* Capture mode */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {([
           { key: "structured" as CaptureMode, label: "Structured Eval", icon: <FileText size={16} />, desc: "Leader / Unit / SQD ST&EO rubric" },
           { key: "ocr"        as CaptureMode, label: "Photo / OCR",     icon: <Camera size={16} />,   desc: "Upload photo of whiteboard or form" },
@@ -267,7 +297,7 @@ export default function AssessPage() {
         ]).map(m => (
           <button
             key={m.key}
-            onClick={() => { setCaptureMode(m.key); setResult(null); setError(""); }}
+            onClick={() => { setCaptureMode(m.key); setResult(null); setError(""); setQueued(false); }}
             className={`p-4 rounded-lg border text-left transition-colors ${
               captureMode === m.key ? "border-[#3fb950] bg-[#3fb950]/10" : "border-[#30363d] bg-[#161b22] hover:border-[#8b949e]"
             }`}
@@ -282,7 +312,7 @@ export default function AssessPage() {
       <form onSubmit={handleSubmit} className="space-y-4">
         {/* Soldier + Event */}
         <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-[10px] text-[#8b949e] uppercase tracking-wider mb-1">Soldier *</label>
               <select
@@ -311,6 +341,12 @@ export default function AssessPage() {
               </select>
             </div>
           </div>
+          {/* GPS tag indicator */}
+          {gps && (
+            <p className="mt-2 text-[10px] text-[#3fb950]/80">
+              GPS coordinates will be attached to this evaluation.
+            </p>
+          )}
         </div>
 
         {/* Structured eval */}
@@ -323,7 +359,7 @@ export default function AssessPage() {
                   key={cat}
                   type="button"
                   onClick={() => { setEvalCategory(cat); setRatings({}); setCollapsed({}); }}
-                  className={`flex-1 py-2 rounded-md text-sm font-semibold transition-colors ${
+                  className={`flex-1 py-2 rounded-md text-xs sm:text-sm font-semibold transition-colors ${
                     evalCategory === cat
                       ? "bg-[#3fb950] text-black"
                       : "text-[#8b949e] hover:text-white"
@@ -346,10 +382,10 @@ export default function AssessPage() {
             </div>
 
             {/* Rating legend */}
-            <div className="flex gap-4 text-[11px]">
-              <span className="text-[#3fb950] font-bold">T</span><span className="text-[#8b949e]">= Trained (5)</span>
-              <span className="text-[#f59e0b] font-bold ml-2">P</span><span className="text-[#8b949e]">= Partially Trained (3)</span>
-              <span className="text-[#f85149] font-bold ml-2">U</span><span className="text-[#8b949e]">= Untrained (1)</span>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px]">
+              <span><span className="text-[#3fb950] font-bold">T</span> <span className="text-[#8b949e]">= Trained (5)</span></span>
+              <span><span className="text-[#f59e0b] font-bold">P</span> <span className="text-[#8b949e]">= Partially Trained (3)</span></span>
+              <span><span className="text-[#f85149] font-bold">U</span> <span className="text-[#8b949e]">= Untrained (1)</span></span>
             </div>
 
             {/* Leader / Unit eval — category sections */}
@@ -432,12 +468,21 @@ export default function AssessPage() {
           </div>
         )}
 
-        {error && <p className="text-[#f85149] text-xs">{error}</p>}
+        {error  && <p className="text-[#f85149] text-xs">{error}</p>}
+
+        {queued && (
+          <div className="flex items-center gap-2 rounded-lg bg-amber-900/30 border border-amber-700/50 px-4 py-2.5">
+            <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse flex-shrink-0" />
+            <p className="text-xs text-amber-200">
+              You&apos;re offline — evaluation saved locally and will sync automatically when connected.
+            </p>
+          </div>
+        )}
 
         <button
           type="submit"
           disabled={loading}
-          className="w-full py-2.5 bg-[#3fb950] hover:bg-green-600 text-black font-bold text-sm rounded-md transition-colors disabled:opacity-50"
+          className="w-full py-3 bg-[#3fb950] hover:bg-green-600 text-black font-bold text-sm rounded-md transition-colors disabled:opacity-50"
         >
           {loading ? "Processing…" : "Submit & Score"}
         </button>
@@ -460,7 +505,7 @@ export default function AssessPage() {
           {catScores && Object.keys(catScores).length > 0 && (
             <div>
               <p className="text-[10px] text-[#8b949e] uppercase tracking-wider mb-2">Category Scores</p>
-              <div className="grid grid-cols-5 gap-2">
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
                 {Object.entries(catScores).map(([cat, score]) => {
                   const color = score >= 4.5 ? "#3fb950" : score >= 3 ? "#f59e0b" : "#f85149";
                   const label = score >= 4.5 ? "T" : score >= 3 ? "P" : "U";
@@ -476,11 +521,11 @@ export default function AssessPage() {
             </div>
           )}
 
-          {/* AI scores (when notes were provided) */}
+          {/* AI scores */}
           {result.score_leadership != null && (
             <div>
               <p className="text-[10px] text-[#8b949e] uppercase tracking-wider mb-2">AI Analysis</p>
-              <div className="grid grid-cols-5 gap-2">
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
                 {[
                   { l: "Leadership",  v: result.score_leadership,      c: "#3fb950" },
                   { l: "Decision",    v: result.score_decision_quality, c: "#f59e0b" },
