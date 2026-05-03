@@ -1,9 +1,66 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Camera, CheckCircle, ChevronDown, ChevronRight, FileText, Mic, Upload } from "lucide-react";
+import {
+  AlertTriangle, Bot, Camera, CheckCircle, ChevronDown, ChevronRight,
+  FileText, Loader2, Mic, Upload, XCircle,
+} from "lucide-react";
 import { api, OfflineError } from "@/lib/api";
 import { AtakDevicePanel, type GpsCoords } from "@/components/AtakDevicePanel";
 import type { Assessment, Soldier, TrainingEvent } from "@/types";
+
+const S1_API = "/s1";
+const S1_PHASES = ["Benning", "Mountain", "Florida"] as const;
+const S1_TERMINAL = new Set(["pending_approval", "completed", "failed"]);
+
+type S1Status = "accepted" | "processing" | "pending_approval" | "completed" | "failed";
+
+interface S1Observation {
+  observation_id: string;
+  soldier_id?: string;
+  task_code?: string;
+  note?: string;
+  rating: "GO" | "NOGO" | "UNCERTAIN";
+  source?: string;
+}
+interface S1Policy { allowed: boolean; reasons: string[]; }
+interface S1Recommendation {
+  recommendation_id: string;
+  target_soldier_id?: string;
+  rationale: string;
+  development_edge?: string;
+  learning_objective?: string;
+  proposed_modification?: string;
+  risk_level?: string;
+  safety_checks?: string[];
+  doctrine_refs?: string[];
+}
+interface S1RecordItem {
+  recommendation: S1Recommendation;
+  policy: S1Policy;
+  status: "pending" | "approved" | "rejected" | "blocked";
+}
+interface S1Run {
+  run_id: string;
+  status: S1Status;
+  observations?: S1Observation[];
+  recommendations?: S1RecordItem[];
+  errors?: string[];
+}
+
+function toBase64(file: File): Promise<string> {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res((r.result as string).split(",")[1]);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+
+const RATING_BADGE: Record<S1Observation["rating"], string> = {
+  GO:        "bg-[#3fb950]/20 text-[#3fb950]",
+  NOGO:      "bg-[#f85149]/20 text-[#f85149]",
+  UNCERTAIN: "bg-[#f59e0b]/20 text-[#f59e0b]",
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,6 +96,87 @@ const CATEGORY_LABELS: Record<EvalCategory, string> = {
 };
 
 // ---------------------------------------------------------------------------
+// Sub-components (defined outside AssessPage to preserve identity across renders)
+// ---------------------------------------------------------------------------
+function ratingKey(taskGroup: string, subtaskNum: number) {
+  return `${taskGroup}__${subtaskNum}`;
+}
+
+function RatingButton({
+  groupKey, sub, ratings, setRating,
+}: {
+  groupKey: string;
+  sub: Subtask;
+  ratings: Record<string, Rating>;
+  setRating: (key: string, r: Rating) => void;
+}) {
+  const key = ratingKey(groupKey, sub.number);
+  const current = ratings[key];
+  return (
+    <div className="flex items-start gap-3 py-2 border-b border-[#21262d] last:border-0">
+      <span className="text-[11px] text-[#8b949e] w-4 text-right flex-shrink-0 mt-0.5">{sub.number}.</span>
+      <span className="flex-1 text-xs text-[#c9d1d9]">{sub.description}</span>
+      <div className="flex gap-1 flex-shrink-0">
+        {(["T", "P", "U"] as Rating[]).map(r => (
+          <button
+            key={r}
+            type="button"
+            onClick={() => setRating(key, r)}
+            className={`w-8 h-7 rounded text-[11px] font-bold border transition-all ${
+              current === r ? RATING_COLORS[r] : RATING_EMPTY
+            }`}
+          >
+            {r}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TaskGroupSection({
+  group, collapsed, setCollapsed, ratings, setRating,
+}: {
+  group: TaskGroup;
+  collapsed: Record<string, boolean>;
+  setCollapsed: React.Dispatch<React.SetStateAction<Record<string, boolean>>>;
+  ratings: Record<string, Rating>;
+  setRating: (key: string, r: Rating) => void;
+}) {
+  const key = group.task_group;
+  const isOpen = !collapsed[key];
+  const rated = group.subtasks.filter(s => ratings[ratingKey(key, s.number)]).length;
+  const all = group.subtasks.length;
+
+  return (
+    <div className="border border-[#30363d] rounded-lg overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))}
+        className="w-full flex items-center justify-between px-4 py-3 bg-[#161b22] hover:bg-[#21262d] transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          {isOpen ? <ChevronDown size={14} className="text-[#8b949e]" /> : <ChevronRight size={14} className="text-[#8b949e]" />}
+          <span className="text-sm font-semibold text-white">{key}</span>
+        </div>
+        <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
+          rated === all ? "bg-[#3fb950]/20 text-[#3fb950]" : "bg-[#30363d] text-[#8b949e]"
+        }`}>
+          {rated}/{all}
+        </span>
+      </button>
+      {isOpen && (
+        <div className="px-4 py-1 bg-[#0d1117]">
+          {group.subtasks.map(sub => (
+            <RatingButton key={sub.number} groupKey={key} sub={sub} ratings={ratings} setRating={setRating} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 export default function AssessPage() {
@@ -62,8 +200,10 @@ export default function AssessPage() {
   const [steoRef, setSteoRef]     = useState<SteoMission[]>([]);
   const [steoMission, setSteoMission] = useState("");
 
-  // T/P/U ratings keyed by `${taskGroup}__${subtaskNumber}`
-  const [ratings, setRatings] = useState<Record<string, Rating>>({});
+  // T/P/U ratings keyed by category then `${taskGroup}__${subtaskNumber}`
+  const [ratingsMap, setRatingsMap] = useState<Record<EvalCategory, Record<string, Rating>>>({
+    leader_eval: {}, unit_eval: {}, steo_eval: {},
+  });
 
   // Collapsed state per task group
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -73,6 +213,20 @@ export default function AssessPage() {
   const [catScores, setCatScores] = useState<Record<string, number> | null>(null);
   const [error, setError]       = useState("");
   const [queued, setQueued]     = useState(false);
+
+  // Ranger AI forwarding
+  const [sendToRanger, setSendToRanger]         = useState(true);
+  const [rangerExpanded, setRangerExpanded]     = useState(false);
+  const [rangerInstructor, setRangerInstructor] = useState("instructor-1");
+  const [rangerPlatoon, setRangerPlatoon]       = useState("plt-1");
+  const [rangerMission, setRangerMission]       = useState("field-eval");
+  const [rangerPhase, setRangerPhase]           = useState<typeof S1_PHASES[number]>("Mountain");
+  const [rangerRun, setRangerRun]               = useState<S1Run | null>(null);
+  const [rangerPolling, setRangerPolling]       = useState(false);
+  const [rangerError, setRangerError]           = useState<string | null>(null);
+  const [decidingRec, setDecidingRec]           = useState<string | null>(null);
+  const [expandedRec, setExpandedRec]           = useState<string | null>(null);
+  const rangerPollRef                           = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Load soldiers, events, reference data
   useEffect(() => {
@@ -90,7 +244,18 @@ export default function AssessPage() {
       setSteoRef(sr);
       if (sr.length) setSteoMission(sr[0].mission);
     }).catch(() => {});
-  }, []);
+    return () => stopRangerPoll();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const soldier = soldiers.find(s => String(s.id) === soldierIdStr);
+    if (soldier?.unit) setRangerPlatoon(soldier.unit);
+  }, [soldierIdStr, soldiers]);
+
+  useEffect(() => {
+    const ev = events.find(e => String(e.id) === eventIdStr);
+    if (ev?.event_name) setRangerMission(ev.event_name);
+  }, [eventIdStr, events]);
 
   // ATAK panel callbacks
   const handleAtakLink = useCallback((id: string) => {
@@ -101,22 +266,24 @@ export default function AssessPage() {
     setGps(coords);
   }, []);
 
+  const ratings = ratingsMap[evalCategory];
+
   function setRating(key: string, r: Rating) {
-    setRatings(prev => ({ ...prev, [key]: r }));
+    setRatingsMap(prev => ({
+      ...prev,
+      [evalCategory]: { ...prev[evalCategory], [key]: r },
+    }));
   }
 
-  function ratingKey(taskGroup: string, subtaskNum: number) {
-    return `${taskGroup}__${subtaskNum}`;
-  }
-
-  function buildRatingsPayload(ref: TaskGroup[], evalType: string) {
+  function buildRatingsPayload(ref: TaskGroup[], evalType: string, cat: EvalCategory) {
+    const r = ratingsMap[cat];
     return ref.flatMap(group =>
       group.subtasks.map(sub => ({
         task_group: group.task_group,
         task_name: evalType,
         subtask_number: sub.number,
         subtask_description: sub.description,
-        rating: ratings[ratingKey(group.task_group, sub.number)] ?? "P",
+        rating: r[ratingKey(group.task_group, sub.number)] ?? "P",
       }))
     );
   }
@@ -124,12 +291,13 @@ export default function AssessPage() {
   function buildSteoPayload() {
     const mission = steoRef.find(m => m.mission === steoMission);
     if (!mission) return [];
+    const r = ratingsMap.steo_eval;
     return mission.subtasks.map(sub => ({
       task_group: "Mission Steps",
       task_name: steoMission,
       subtask_number: sub.number,
       subtask_description: sub.description,
-      rating: ratings[ratingKey(steoMission, sub.number)] ?? "P",
+      rating: r[ratingKey(steoMission, sub.number)] ?? "P",
     }));
   }
 
@@ -159,9 +327,132 @@ export default function AssessPage() {
     return `[GPS ${gps.lat.toFixed(5)},${gps.lon.toFixed(5)} ±${gps.accuracy}m]\n`;
   }
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  function buildRangerFreeText(): string {
+    const soldier = soldiers.find(s => String(s.id) === soldierIdStr);
+    const soldierLabel = soldier ? `${soldier.rank} ${soldier.name} (${soldier.service_number})` : `Soldier #${soldierIdStr}`;
+    const evalLabel = CATEGORY_LABELS[evalCategory];
+    const lines: string[] = [`[${evalLabel}] ${soldierLabel}`];
+
+    if (evalCategory === "leader_eval" || evalCategory === "unit_eval") {
+      const ref = evalCategory === "leader_eval" ? leaderRef : unitRef;
+      ref.forEach(group => {
+        const parts = group.subtasks
+          .map(sub => {
+            const r = ratings[ratingKey(group.task_group, sub.number)];
+            return r ? `${sub.description} = ${r}` : null;
+          })
+          .filter(Boolean);
+        if (parts.length) lines.push(`${group.task_group}: ${parts.join(", ")}`);
+      });
+    } else if (evalCategory === "steo_eval") {
+      const mission = steoRef.find(m => m.mission === steoMission);
+      if (mission) {
+        const parts = mission.subtasks
+          .map(sub => {
+            const r = ratings[ratingKey(steoMission, sub.number)];
+            return r ? `Step ${sub.number} (${sub.description}) = ${r}` : null;
+          })
+          .filter(Boolean);
+        if (parts.length) lines.push(`Mission: ${steoMission}. ${parts.join(". ")}`);
+      }
+    }
+
+    if (notes.trim()) lines.push(`Notes: ${notes.trim()}`);
+    return lines.join("\n");
+  }
+
+  function stopRangerPoll() {
+    if (rangerPollRef.current) { clearInterval(rangerPollRef.current); rangerPollRef.current = null; }
+    setRangerPolling(false);
+  }
+
+  async function fetchRangerRun(runId: string) {
+    try {
+      const res = await fetch(`${S1_API}/v1/runs/${runId}`);
+      const body: S1Run = await res.json();
+      setRangerRun(body);
+      if (S1_TERMINAL.has(body.status)) stopRangerPoll();
+    } catch {
+      // silently ignore transient poll errors
+    }
+  }
+
+  async function forwardToRanger(assessmentResult: Assessment) {
+    setRangerRun(null); setRangerError(null); setRangerPolling(false);
+    stopRangerPoll();
+    try {
+      let audio_b64: string | null = null;
+      let image_b64: string[] = [];
+      if (captureMode === "stt" && file) audio_b64 = await toBase64(file);
+      if (captureMode === "ocr" && file) image_b64 = [await toBase64(file)];
+
+      const soldier = soldiers.find(s => String(s.id) === soldierIdStr);
+      const soldierLabel = soldier
+        ? `${soldier.rank} ${soldier.name} (${soldier.service_number})`
+        : `Soldier #${soldierIdStr}`;
+      const free_text = captureMode === "structured"
+        ? buildRangerFreeText()
+        : (`[${CATEGORY_LABELS[evalCategory]}] ${soldierLabel}\n${assessmentResult.ai_summary ?? notes ?? ""}`).trim() || null;
+
+      const geo = gps
+        ? { lat: gps.lat, lon: gps.lon, grid_mgrs: "ATAK" }
+        : { lat: 0, lon: 0, grid_mgrs: "00A" };
+
+      const res = await fetch(`${S1_API}/v1/ingest`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          instructor_id: rangerInstructor,
+          platoon_id: rangerPlatoon,
+          mission_id: rangerMission,
+          phase: rangerPhase,
+          timestamp_utc: new Date().toISOString(),
+          geo,
+          free_text,
+          audio_b64,
+          image_b64,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.detail ?? `Ranger AI error ${res.status}`);
+
+      const runId: string = body.run_id;
+      setRangerRun(body as S1Run);
+
+      if (!S1_TERMINAL.has(body.status as S1Status)) {
+        setRangerPolling(true);
+        rangerPollRef.current = setInterval(() => fetchRangerRun(runId), 2000);
+      }
+    } catch (err: unknown) {
+      setRangerError(err instanceof Error ? err.message : "Ranger AI forwarding failed");
+    }
+  }
+
+  async function handleRangerDecision(recId: string, decision: "approve" | "reject") {
+    if (!rangerRun) return;
+    setDecidingRec(recId);
+    try {
+      const res = await fetch(`${S1_API}/v1/recommendations/${recId}/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision }),
+      });
+      if (!res.ok) {
+        const b = await res.json().catch(() => ({}));
+        throw new Error(b?.detail ?? `Decision failed ${res.status}`);
+      }
+      await fetchRangerRun(rangerRun.run_id);
+    } catch (err: unknown) {
+      setRangerError(err instanceof Error ? err.message : "Decision failed");
+    } finally {
+      setDecidingRec(null);
+    }
+  }
+
+  async function handleSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
     setError(""); setLoading(true); setResult(null); setCatScores(null); setQueued(false);
+    setRangerRun(null); setRangerError(null);
 
     const soldierId = parseInt(soldierIdStr);
     if (!soldierId) { setError("Select a soldier"); setLoading(false); return; }
@@ -175,8 +466,8 @@ export default function AssessPage() {
           event_id: eventIdStr ? parseInt(eventIdStr) : null,
           eval_category: evalCategory,
           steo_mission_name: evalCategory === "steo_eval" ? steoMission : null,
-          leader_ratings: evalCategory === "leader_eval" ? buildRatingsPayload(leaderRef, "Leader Eval") : [],
-          unit_ratings:   evalCategory === "unit_eval"   ? buildRatingsPayload(unitRef,   "Unit Eval")   : [],
+          leader_ratings: evalCategory === "leader_eval" ? buildRatingsPayload(leaderRef, "Leader Eval", "leader_eval") : [],
+          unit_ratings:   evalCategory === "unit_eval"   ? buildRatingsPayload(unitRef,   "Unit Eval",   "unit_eval")   : [],
           steo_ratings:   evalCategory === "steo_eval"   ? buildSteoPayload()                             : [],
           notes: notesWithGps,
           run_ai_scoring: !!notes.trim(),
@@ -186,6 +477,7 @@ export default function AssessPage() {
         );
         setResult(res);
         setCatScores((res as typeof res & { category_scores: Record<string, number> }).category_scores ?? null);
+        if (sendToRanger) await forwardToRanger(res);
       } else {
         if (!file) { setError("Select a file to upload"); setLoading(false); return; }
         const form = new FormData();
@@ -199,6 +491,7 @@ export default function AssessPage() {
           : "/api/v1/assessments/capture/stt";
         const res = await api.upload<Assessment>(endpoint, form);
         setResult(res);
+        if (sendToRanger) await forwardToRanger(res);
       }
     } catch (err: unknown) {
       if (err instanceof OfflineError) {
@@ -209,68 +502,6 @@ export default function AssessPage() {
     } finally {
       setLoading(false);
     }
-  }
-
-  // -------------------------------------------------------------------------
-  // Render helpers
-  // -------------------------------------------------------------------------
-  function RatingButton({ groupKey, sub }: { groupKey: string; sub: Subtask }) {
-    const key = ratingKey(groupKey, sub.number);
-    const current = ratings[key];
-    return (
-      <div className="flex items-start gap-3 py-2 border-b border-[#21262d] last:border-0">
-        <span className="text-[11px] text-[#8b949e] w-4 text-right flex-shrink-0 mt-0.5">{sub.number}.</span>
-        <span className="flex-1 text-xs text-[#c9d1d9]">{sub.description}</span>
-        <div className="flex gap-1 flex-shrink-0">
-          {(["T", "P", "U"] as Rating[]).map(r => (
-            <button
-              key={r}
-              type="button"
-              onClick={() => setRating(key, r)}
-              className={`w-8 h-7 rounded text-[11px] font-bold border transition-all ${
-                current === r ? RATING_COLORS[r] : RATING_EMPTY
-              }`}
-            >
-              {r}
-            </button>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  function TaskGroupSection({ group }: { group: TaskGroup }) {
-    const key = group.task_group;
-    const isOpen = !collapsed[key];
-    const rated = group.subtasks.filter(s => ratings[ratingKey(key, s.number)]).length;
-    const all = group.subtasks.length;
-
-    return (
-      <div className="border border-[#30363d] rounded-lg overflow-hidden">
-        <button
-          type="button"
-          onClick={() => setCollapsed(prev => ({ ...prev, [key]: !prev[key] }))}
-          className="w-full flex items-center justify-between px-4 py-3 bg-[#161b22] hover:bg-[#21262d] transition-colors"
-        >
-          <div className="flex items-center gap-2">
-            {isOpen ? <ChevronDown size={14} className="text-[#8b949e]" /> : <ChevronRight size={14} className="text-[#8b949e]" />}
-            <span className="text-sm font-semibold text-white">{key}</span>
-          </div>
-          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${
-            rated === all ? "bg-[#3fb950]/20 text-[#3fb950]" : "bg-[#30363d] text-[#8b949e]"
-          }`}>
-            {rated}/{all}
-          </span>
-        </button>
-        {isOpen && (
-          <div className="px-4 py-1 bg-[#0d1117]">
-            {group.subtasks.map(sub => (
-              <RatingButton key={sub.number} groupKey={key} sub={sub} />
-            ))}
-          </div>
-        )}
-      </div>
-    );
   }
 
   const activeRef = evalCategory === "leader_eval" ? leaderRef : unitRef;
@@ -358,7 +589,7 @@ export default function AssessPage() {
                 <button
                   key={cat}
                   type="button"
-                  onClick={() => { setEvalCategory(cat); setRatings({}); setCollapsed({}); }}
+                  onClick={() => { setEvalCategory(cat); setCollapsed({}); }}
                   className={`flex-1 py-2 rounded-md text-xs sm:text-sm font-semibold transition-colors ${
                     evalCategory === cat
                       ? "bg-[#3fb950] text-black"
@@ -392,7 +623,7 @@ export default function AssessPage() {
             {(evalCategory === "leader_eval" || evalCategory === "unit_eval") && (
               <div className="space-y-2">
                 {activeRef.map(group => (
-                  <TaskGroupSection key={group.task_group} group={group} />
+                  <TaskGroupSection key={group.task_group} group={group} collapsed={collapsed} setCollapsed={setCollapsed} ratings={ratings} setRating={setRating} />
                 ))}
               </div>
             )}
@@ -404,7 +635,7 @@ export default function AssessPage() {
                   <label className="block text-[10px] text-[#8b949e] uppercase tracking-wider mb-1">Mission Type *</label>
                   <select
                     value={steoMission}
-                    onChange={e => { setSteoMission(e.target.value); setRatings({}); }}
+                    onChange={e => { setSteoMission(e.target.value); setRatingsMap(prev => ({ ...prev, steo_eval: {} })); }}
                     className="w-full px-3 py-2 bg-[#0d1117] border border-[#30363d] rounded text-sm text-white focus:outline-none focus:border-[#3fb950]"
                   >
                     {steoRef.map(m => (
@@ -418,7 +649,7 @@ export default function AssessPage() {
                   </div>
                   <div className="px-4 py-1 bg-[#0d1117]">
                     {steoRef.find(m => m.mission === steoMission)?.subtasks.map(sub => (
-                      <RatingButton key={sub.number} groupKey={steoMission} sub={sub} />
+                      <RatingButton key={sub.number} groupKey={steoMission} sub={sub} ratings={ratings} setRating={setRating} />
                     ))}
                   </div>
                 </div>
@@ -468,6 +699,59 @@ export default function AssessPage() {
           </div>
         )}
 
+        {/* Ranger AI forwarding */}
+        <div className="border border-[#30363d] rounded-lg overflow-hidden">
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => setRangerExpanded(p => !p)}
+            onKeyDown={e => e.key === "Enter" && setRangerExpanded(p => !p)}
+            className="w-full flex items-center justify-between px-4 py-3 bg-[#161b22] hover:bg-[#21262d] transition-colors cursor-pointer"
+          >
+            <div className="flex items-center gap-2">
+              <Bot size={14} className="text-[#58a6ff]" />
+              <span className="text-sm font-semibold text-white">Forward to Ranger AI</span>
+              <span className="text-[10px] text-[#8b949e]">System 1</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={e => { e.stopPropagation(); setSendToRanger(p => !p); }}
+                className={`relative w-9 h-5 rounded-full transition-colors ${sendToRanger ? "bg-[#58a6ff]" : "bg-[#30363d]"}`}
+              >
+                <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${sendToRanger ? "translate-x-4" : "translate-x-0.5"}`} />
+              </button>
+              {rangerExpanded ? <ChevronDown size={14} className="text-[#8b949e]" /> : <ChevronRight size={14} className="text-[#8b949e]" />}
+            </div>
+          </div>
+          {rangerExpanded && (
+            <div className="px-4 py-3 bg-[#0d1117] grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div>
+                <label className="text-[10px] text-[#8b949e] uppercase tracking-wider">Instructor ID</label>
+                <input value={rangerInstructor} onChange={e => setRangerInstructor(e.target.value)}
+                  className="mt-1 w-full bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-[#58a6ff]" />
+              </div>
+              <div>
+                <label className="text-[10px] text-[#8b949e] uppercase tracking-wider">Platoon ID</label>
+                <input value={rangerPlatoon} onChange={e => setRangerPlatoon(e.target.value)}
+                  className="mt-1 w-full bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-[#58a6ff]" />
+              </div>
+              <div>
+                <label className="text-[10px] text-[#8b949e] uppercase tracking-wider">Mission ID</label>
+                <input value={rangerMission} onChange={e => setRangerMission(e.target.value)}
+                  className="mt-1 w-full bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-[#58a6ff]" />
+              </div>
+              <div>
+                <label className="text-[10px] text-[#8b949e] uppercase tracking-wider">Phase</label>
+                <select value={rangerPhase} onChange={e => setRangerPhase(e.target.value as typeof S1_PHASES[number])}
+                  className="mt-1 w-full bg-[#161b22] border border-[#30363d] rounded px-2 py-1.5 text-xs text-white focus:outline-none focus:border-[#58a6ff]">
+                  {S1_PHASES.map(p => <option key={p}>{p}</option>)}
+                </select>
+              </div>
+            </div>
+          )}
+        </div>
+
         {error  && <p className="text-[#f85149] text-xs">{error}</p>}
 
         {queued && (
@@ -484,11 +768,11 @@ export default function AssessPage() {
           disabled={loading}
           className="w-full py-3 bg-[#3fb950] hover:bg-green-600 text-black font-bold text-sm rounded-md transition-colors disabled:opacity-50"
         >
-          {loading ? "Processing…" : "Submit & Score"}
+          {loading ? "Processing…" : sendToRanger ? "Submit, Score & Forward to Ranger AI" : "Submit & Score"}
         </button>
       </form>
 
-      {/* Result */}
+      {/* Evaluation result */}
       {result && (
         <div className="bg-[#161b22] border border-[#3fb950] rounded-lg p-5 space-y-4">
           <div className="flex items-center gap-2">
@@ -501,7 +785,6 @@ export default function AssessPage() {
             )}
           </div>
 
-          {/* Category scores */}
           {catScores && Object.keys(catScores).length > 0 && (
             <div>
               <p className="text-[10px] text-[#8b949e] uppercase tracking-wider mb-2">Category Scores</p>
@@ -521,7 +804,6 @@ export default function AssessPage() {
             </div>
           )}
 
-          {/* AI scores */}
           {result.score_leadership != null && (
             <div>
               <p className="text-[10px] text-[#8b949e] uppercase tracking-wider mb-2">AI Analysis</p>
@@ -550,6 +832,195 @@ export default function AssessPage() {
           )}
         </div>
       )}
+
+      {/* Ranger AI output panel */}
+      {(rangerRun || rangerPolling || rangerError) && (
+        <div className="bg-[#161b22] border border-[#58a6ff]/40 rounded-lg overflow-hidden">
+          {/* Header */}
+          <div className="flex items-center gap-2 px-4 py-3 border-b border-[#30363d] bg-[#0d1117]">
+            <Bot size={14} className="text-[#58a6ff] shrink-0" />
+            <span className="text-sm font-bold text-white">Ranger AI Output</span>
+            {rangerRun && (
+              <span className="font-mono text-[10px] text-[#8b949e] ml-1">{rangerRun.run_id.slice(0, 18)}…</span>
+            )}
+            <div className="ml-auto flex items-center gap-2">
+              {rangerPolling && (
+                <span className="flex items-center gap-1 text-[10px] text-[#f59e0b]">
+                  <Loader2 size={10} className="animate-spin" /> Processing…
+                </span>
+              )}
+              {rangerRun && !rangerPolling && (
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                  rangerRun.status === "completed" || rangerRun.status === "pending_approval"
+                    ? "bg-[#3fb950]/10 text-[#3fb950]"
+                    : rangerRun.status === "failed"
+                    ? "bg-[#f85149]/10 text-[#f85149]"
+                    : "bg-[#f59e0b]/10 text-[#f59e0b]"
+                }`}>
+                  {rangerRun.status.replace(/_/g, " ").toUpperCase()}
+                </span>
+              )}
+            </div>
+          </div>
+
+          {rangerError && (
+            <div className="flex items-center gap-2 m-4 p-3 bg-[#f85149]/10 border border-[#f85149]/30 rounded text-xs text-[#f85149]">
+              <AlertTriangle size={12} /> {rangerError}
+            </div>
+          )}
+
+          {rangerRun?.errors?.length ? (
+            <div className="m-4 p-3 bg-[#f85149]/10 border border-[#f85149]/30 rounded text-xs text-[#f85149] space-y-0.5">
+              {rangerRun.errors.map((e, i) => <div key={i}>{e}</div>)}
+            </div>
+          ) : null}
+
+          {/* Observations */}
+          {(rangerRun?.observations?.length ?? 0) > 0 && (
+            <div className="px-4 pt-3 pb-2">
+              <p className="text-[10px] font-bold text-[#8b949e] uppercase tracking-wider mb-2">
+                Observations ({rangerRun!.observations!.length})
+              </p>
+              <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                {rangerRun!.observations!.map(obs => (
+                  <div key={obs.observation_id} className="flex items-start gap-2 text-xs py-1.5 border-b border-[#21262d] last:border-0">
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded shrink-0 ${RATING_BADGE[obs.rating]}`}>
+                      {obs.rating}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      {obs.soldier_id && <span className="text-[#58a6ff] mr-1.5">{obs.soldier_id}</span>}
+                      {obs.task_code  && <span className="text-[#8b949e] mr-1.5">[{obs.task_code}]</span>}
+                      <span className="text-[#c9d1d9]">{obs.note}</span>
+                    </div>
+                    {obs.source && <span className="text-[#6e7681] shrink-0 text-[10px]">{obs.source}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Recommendations */}
+          {(rangerRun?.recommendations?.length ?? 0) > 0 && (
+            <div className="px-4 pb-4 space-y-2">
+              <p className="text-[10px] font-bold text-[#8b949e] uppercase tracking-wider pt-1">
+                Recommendations ({rangerRun!.recommendations!.length})
+              </p>
+              {rangerRun!.recommendations!.map(({ recommendation: rec, policy, status }) => {
+                const isPending = status === "pending";
+                const isBlocked = status === "blocked";
+                const isOpen = expandedRec === rec.recommendation_id;
+                return (
+                  <div key={rec.recommendation_id}
+                    className={`border rounded-lg overflow-hidden ${
+                      isBlocked  ? "border-[#f85149]/20 opacity-70"
+                      : status === "approved" ? "border-[#3fb950]/30"
+                      : status === "rejected" ? "border-[#30363d] opacity-50"
+                      : "border-[#30363d]"
+                    }`}>
+                    <button
+                      onClick={() => setExpandedRec(isOpen ? null : rec.recommendation_id)}
+                      className="w-full flex items-start gap-2 p-3 text-left hover:bg-[#21262d] transition-colors bg-[#0d1117]"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5 mb-1">
+                          {rec.target_soldier_id && (
+                            <span className="text-[10px] font-bold bg-[#58a6ff]/10 text-[#58a6ff] px-1.5 py-0.5 rounded">
+                              {rec.target_soldier_id}
+                            </span>
+                          )}
+                          {rec.risk_level && (
+                            <span className={`text-[10px] font-bold ${rec.risk_level === "high" ? "text-[#f85149]" : "text-[#f59e0b]"}`}>
+                              {rec.risk_level.toUpperCase()} RISK
+                            </span>
+                          )}
+                          {isBlocked && <span className="text-[10px] font-bold text-[#f85149]">BLOCKED</span>}
+                          {status === "approved" && <CheckCircle size={11} className="text-[#3fb950]" />}
+                          {status === "rejected" && <XCircle size={11} className="text-[#f85149]" />}
+                        </div>
+                        <p className="text-xs text-white leading-snug">
+                          {rec.proposed_modification ?? rec.rationale}
+                        </p>
+                        {rec.development_edge && (
+                          <p className="text-[10px] text-[#58a6ff] mt-0.5">Edge: {rec.development_edge}</p>
+                        )}
+                      </div>
+                      {isOpen
+                        ? <ChevronDown size={13} className="text-[#8b949e] shrink-0 mt-0.5" />
+                        : <ChevronRight size={13} className="text-[#8b949e] shrink-0 mt-0.5" />}
+                    </button>
+
+                    {isOpen && (
+                      <div className="px-3 pb-3 space-y-1.5 text-xs bg-[#0d1117] border-t border-[#21262d]">
+                        {rec.learning_objective && (
+                          <p className="text-[#8b949e] pt-2"><span className="text-white">Objective: </span>{rec.learning_objective}</p>
+                        )}
+                        {rec.rationale && (
+                          <p className="text-[#8b949e]"><span className="text-white">Rationale: </span>{rec.rationale}</p>
+                        )}
+                        {rec.safety_checks?.length ? (
+                          <div className="space-y-0.5">
+                            <span className="text-white">Safety: </span>
+                            {rec.safety_checks.map((c, i) => (
+                              <p key={i} className="text-[#f59e0b] flex gap-1 items-start">
+                                <AlertTriangle size={10} className="shrink-0 mt-0.5" />{c}
+                              </p>
+                            ))}
+                          </div>
+                        ) : null}
+                        {rec.doctrine_refs?.length ? (
+                          <div>
+                            <span className="text-white">Doctrine: </span>
+                            {rec.doctrine_refs.map((d, i) => <p key={i} className="text-[#8b949e]">• {d}</p>)}
+                          </div>
+                        ) : null}
+                        {isBlocked && policy.reasons.length > 0 && (
+                          <div className="mt-1 space-y-0.5">
+                            {policy.reasons.map((r, i) => (
+                              <p key={i} className="flex items-center gap-1 text-[#f85149]">
+                                <XCircle size={10} />{r}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {isPending && (
+                      <div className="flex gap-2 px-3 py-2 bg-[#161b22] border-t border-[#21262d]">
+                        <button
+                          onClick={() => handleRangerDecision(rec.recommendation_id, "approve")}
+                          disabled={decidingRec === rec.recommendation_id}
+                          className="flex-1 flex items-center justify-center gap-1 bg-[#3fb950]/10 hover:bg-[#3fb950]/20 border border-[#3fb950]/30 text-[#3fb950] text-[11px] font-bold py-1.5 rounded disabled:opacity-50 transition-colors"
+                        >
+                          {decidingRec === rec.recommendation_id
+                            ? <Loader2 size={11} className="animate-spin" />
+                            : <CheckCircle size={11} />} Approve
+                        </button>
+                        <button
+                          onClick={() => handleRangerDecision(rec.recommendation_id, "reject")}
+                          disabled={decidingRec === rec.recommendation_id}
+                          className="flex-1 flex items-center justify-center gap-1 bg-[#f85149]/10 hover:bg-[#f85149]/20 border border-[#f85149]/30 text-[#f85149] text-[11px] font-bold py-1.5 rounded disabled:opacity-50 transition-colors"
+                        >
+                          <XCircle size={11} /> Reject
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Empty state while polling and no data yet */}
+          {rangerPolling && !rangerRun?.observations?.length && !rangerRun?.recommendations?.length && (
+            <div className="px-4 py-6 text-center text-xs text-[#8b949e]">
+              <Loader2 size={20} className="animate-spin text-[#58a6ff] mx-auto mb-2" />
+              Waiting for Ranger AI to process the evaluation…
+            </div>
+          )}
+        </div>
+      )}
+
     </div>
   );
 }

@@ -18,13 +18,20 @@ from aiohttp import web, ClientSession
 BACKEND_PORT = int(os.getenv("BACKEND_PORT", "8000"))
 FRONTEND_PORT = int(os.getenv("FRONTEND_PORT", "3000"))
 EDGE_PORT = int(os.getenv("PORT", "8080"))
+S1_PORT = int(os.getenv("S1_PORT", "8001"))
 
 BACKEND_URL  = f"http://127.0.0.1:{BACKEND_PORT}"
 FRONTEND_URL = f"http://127.0.0.1:{FRONTEND_PORT}"
+S1_URL       = f"http://127.0.0.1:{S1_PORT}"
 
 
-async def proxy(target_base: str, request: web.Request) -> web.Response:
-    url = f"{target_base}{request.path_qs}"
+async def proxy(target_base: str, request: web.Request, strip_prefix: str = "") -> web.Response:
+    path = request.path_qs
+    if strip_prefix and path.startswith(strip_prefix):
+        path = path[len(strip_prefix):]
+        if not path.startswith("/"):
+            path = "/" + path
+    url = f"{target_base}{path}"
     async with ClientSession() as session:
         async with session.request(
             request.method,
@@ -42,6 +49,8 @@ async def proxy(target_base: str, request: web.Request) -> web.Response:
 
 
 async def handle(request: web.Request) -> web.Response:
+    if request.path.startswith("/s1"):
+        return await proxy(S1_URL, request, strip_prefix="/s1")
     if request.path.startswith("/api") or request.path == "/health":
         return await proxy(BACKEND_URL, request)
     return await proxy(FRONTEND_URL, request)
